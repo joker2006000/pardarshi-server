@@ -1,13 +1,22 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
+const { Client, LocalAuth } = require('whatsapp-web.js');
+
+// 1. Set the default cloud settings (for Render)
+const puppeteerOptions = {
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+};
+
+// 2. If we are running locally (development), add the Windows path
+if (process.env.NODE_ENV === 'development') {
+    puppeteerOptions.executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+}
+
+// 3. Initialize the client
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { 
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        // Tell Puppeteer to use your real Google Chrome
-        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    }
+    puppeteer: puppeteerOptions
 });
 
 client.on('qr', (qr) => {
