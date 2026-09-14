@@ -1,5 +1,6 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const puppeteer = require('puppeteer'); // <-- Add this line to help find Chrome
 
 const puppeteerConfig = {
     args: [
@@ -9,8 +10,12 @@ const puppeteerConfig = {
         '--disable-gpu'
     ]
 };
-// Only use local Windows Chrome when running on your machine
-if (process.env.NODE_ENV === 'development') {
+
+if (process.env.NODE_ENV === 'production') {
+    // Let Puppeteer dynamically find the exact Linux Chrome path on Render!
+    puppeteerConfig.executablePath = puppeteer.executablePath();
+} else {
+    // Your Windows path for local testing
     puppeteerConfig.executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 }
 
