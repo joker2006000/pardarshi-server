@@ -1,23 +1,24 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
-const { Client, LocalAuth } = require('whatsapp-web.js');
-
-// 1. Set the default cloud settings (for Render)
-const puppeteerOptions = {
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+const puppeteerConfig = {
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+    ]
 };
-
-// 2. If we are running locally (development), add the Windows path
+// Only use local Windows Chrome when running on your machine
 if (process.env.NODE_ENV === 'development') {
-    puppeteerOptions.executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    puppeteerConfig.executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 }
 
-// 3. Initialize the client
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: puppeteerOptions
+    puppeteer: puppeteerConfig
 });
+
 
 client.on('qr', (qr) => {
     console.log('📱 Scan this QR code with your WhatsApp to link the Pardarshi Bot:');
