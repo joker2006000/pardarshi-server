@@ -11,6 +11,8 @@ const puppeteerConfig = {
     ]
 };
 
+
+
 if (process.env.NODE_ENV === 'production') {
     // Let Puppeteer dynamically find the exact Linux Chrome path on Render!
     puppeteerConfig.executablePath = puppeteer.executablePath();
