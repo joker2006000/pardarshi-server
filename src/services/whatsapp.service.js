@@ -28,8 +28,13 @@ const client = new Client({
 
 
 client.on('qr', (qr) => {
-    console.log('📱 Scan this QR code with your WhatsApp to link the Pardarshi Bot:');
-    qrcode.generate(qr, { small: true });
+    // 1. Generate an instant, clickable image link in the logs
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(qr)}`;
+    
+    console.log('\n======================================================');
+    console.log('👉 CLICK THIS LINK TO OPEN YOUR WHATSAPP QR CODE:');
+    console.log(qrUrl);
+    console.log('======================================================\n');
 });
 
 client.on('ready', () => {
