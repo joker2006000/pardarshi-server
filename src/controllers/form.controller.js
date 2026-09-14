@@ -1,7 +1,7 @@
 const db = require('../config/db');
 const slugify = require('slugify');
 const QRCode = require('qrcode');
-const whatsappService = require('../services/whatsapp.service');//whatsapp
+
 // Import AWS S3 SDK for the QR Code Upload
 
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
@@ -279,26 +279,7 @@ exports.submitPublicForm = async (req, res) => {
             JSON.stringify(answers || {}), req.ip
         ]);
 
-        // --- WHATSAPP NOTIFICATION LOGIC (FREE FORM) ---
-        if (contributor_mobile) {
-            try {
-                const [orgData] = await db.query(
-                    `SELECT name, slug FROM organizations WHERE organization_id = ?`, 
-                    [organization_id]
-                );
-                if (orgData.length > 0) {
-                    await whatsappService.sendThankYouMessage(
-                        contributor_mobile, 
-                        contributor_name, 
-                        orgData[0].name, 
-                        0, // 0 Amount for free forms
-                        orgData[0].slug
-                    );
-                }
-            } catch (waError) {
-                console.error("WhatsApp Free Form Error:", waError);
-            }
-        }
+    
 
         res.status(200).json({
             success: true,

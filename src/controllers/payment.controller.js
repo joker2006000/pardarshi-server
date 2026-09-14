@@ -1,6 +1,6 @@
 const db = require('../config/db'); // Assuming standard mysql2/promise pool
 const cashfreeService = require('../services/cashfree.service');
-const whatsappService = require('../services/whatsapp.service'); //whatsapp
+
 
 exports.initiateFormPayment = async (req, res) => {
     const connection = await db.getConnection();
@@ -187,35 +187,6 @@ exports.verifyPayment = async (req, res) => {
 
                 await connection.commit();
 
-                // --- WHATSAPP NOTIFICATION LOGIC ---
-                try {
-                    // Fetch the specific organization's name and unique slug for the link
-                    const [orgData] = await connection.query(
-                        `SELECT name, slug FROM organizations WHERE organization_id = ?`, 
-                        [tags.org_id]
-                    );
-
-                    if (orgData.length > 0 && orderData.customer_details.customer_phone) {
-                        const orgName = orgData[0].name;
-                        const orgSlug = orgData[0].slug;
-                        
-                        await whatsappService.sendThankYouMessage(
-                            orderData.customer_details.customer_phone, 
-                            orderData.customer_details.customer_name, 
-                            orgName, 
-                            orderData.order_amount,
-                            orgSlug
-                        );
-                        
-                        // Mark as sent in DB
-                        await connection.query(
-                            `UPDATE contributions SET whatsapp_sent = TRUE, whatsapp_sent_at = NOW() WHERE payment_id = ?`, 
-                            [order_id]
-                        );
-                    }
-                } catch (waError) {
-                    console.error("WhatsApp Trigger Error:", waError);
-                }
             }
 
             return res.status(200).json({ success: true, status: 'PAID', amount: orderData.order_amount });

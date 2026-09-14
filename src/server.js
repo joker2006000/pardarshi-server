@@ -2,7 +2,7 @@ require('dotenv').config();
 const app = require('./app');
 const db = require('./config/db'); // Your database connection pool
 const cashfreeService = require('./services/cashfree.service');
-const whatsappService = require('./services/whatsapp.service');
+
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
@@ -17,11 +17,7 @@ const startServer = async () => {
         // 2. Test Cashfree Payment System Connection
         await cashfreeService.verifyConnection();
         console.log("✅ Cashfree payment system verified and ready.");
-
-  
-
-// Start the WhatsApp client automatically when the server boots
-whatsappService.initializeWhatsApp();
+        
 
         // 3. Start the Server
         app.listen(PORT, () => {
@@ -36,5 +32,3 @@ whatsappService.initializeWhatsApp();
         process.exit(1); 
     }
 };
-
-startServer();
