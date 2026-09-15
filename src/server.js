@@ -2,8 +2,7 @@ require('dotenv').config();
 const app = require('./app');
 const db = require('./config/db'); // Your database connection pool
 const cashfreeService = require('./services/cashfree.service');
-
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 
 const startServer = async () => {
     try {
@@ -17,7 +16,8 @@ const startServer = async () => {
         // 2. Test Cashfree Payment System Connection
         await cashfreeService.verifyConnection();
         console.log("✅ Cashfree payment system verified and ready.");
-        
+
+
 
         // 3. Start the Server
         app.listen(PORT, () => {
@@ -32,3 +32,5 @@ const startServer = async () => {
         process.exit(1); 
     }
 };
+
+startServer();
