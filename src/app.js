@@ -36,7 +36,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/organization', organizationRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/project', projectRoutes);
-app.use('/api/payments', paymentRoutes);
+app.use('/api/payment', paymentRoutes);
 app.use('/api/forms', formRoutes);
 // NEW: Mount the Transaction routes
 app.use('/api/transactions', transactionRoutes);
