@@ -12,4 +12,10 @@ router.post('/expense/offline', upload.array('proofs', 5), transactionController
 // 3. Edit an existing expense (Change title, description, project, amount (if offline), add new proofs)
 router.put('/expense/:expense_id', upload.array('proofs', 5), transactionController.editExpense);
 
+// 4. Add an offline contribution
+router.post('/contribution/offline', upload.array('proofs', 5), transactionController.addOfflineContribution);
+
+// 5. Edit an existing contribution
+router.put('/contribution/:contribution_id', upload.array('proofs', 5), transactionController.editContribution);
+
 module.exports = router;

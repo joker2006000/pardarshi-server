@@ -181,3 +181,106 @@ exports.editExpense = async (req, res) => {
         if (connection) connection.release();
     }
 };
+
+// ==========================================
+// 4. ADD OFFLINE CONTRIBUTION
+// ==========================================
+exports.addOfflineContribution = async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const { organization_id, project_id, contributor_name, amount } = req.body;
+        const validProjectId = project_id ? project_id : null;
+        const parsedAmount = parseFloat(amount);
+
+        await connection.beginTransaction();
+
+        // 1. Insert Contribution
+        const [contribResult] = await connection.query(`
+            INSERT INTO contributions (organization_id, project_id, contributor_name, amount, payment_status, payment_gateway, payment_method)
+            VALUES (?, ?, ?, ?, 'success', 'offline', 'offline')
+        `, [organization_id, validProjectId, contributor_name, parsedAmount]);
+
+        // Note: If you eventually create a 'contribution_documents' table, 
+        // you would handle req.files here just like in addOfflineExpense.
+
+        // 2. Update Organization Math (Money comes IN)
+        await connection.query(`UPDATE organizations SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE organization_id = ?`, [parsedAmount, parsedAmount, organization_id]);
+        
+        // 3. Update Project Math (Money comes IN)
+        if (validProjectId) {
+            await connection.query(`UPDATE organization_projects SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [parsedAmount, parsedAmount, validProjectId]);
+        }
+
+        await connection.commit();
+        res.status(200).json({ success: true, message: "Offline contribution added successfully." });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Add Offline Contribution Error:", error);
+        res.status(500).json({ error: "Failed to add offline contribution." });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+// ==========================================
+// 5. EDIT CONTRIBUTION (Updates Name, Project & Math)
+// ==========================================
+exports.editContribution = async (req, res) => {
+    const { contribution_id } = req.params;
+    const connection = await db.getConnection();
+    try {
+        const { contributor_name, new_project_id, amount } = req.body;
+        const validNewProjectId = new_project_id ? new_project_id : null;
+
+        await connection.beginTransaction();
+
+        // 1. Get current contribution data
+        const [existing] = await connection.query(`
+            SELECT organization_id, amount, project_id, payment_gateway 
+            FROM contributions WHERE contribution_id = ?
+        `, [contribution_id]);
+        
+        if (existing.length === 0) throw new Error("Contribution not found");
+        
+        const contrib = existing[0];
+        const oldProjectId = contrib.project_id;
+        const oldAmount = parseFloat(contrib.amount);
+        const newAmount = amount ? parseFloat(amount) : oldAmount;
+
+        // 2. STRICT SECURITY: Block amount changes for online payments
+        if (contrib.payment_gateway !== 'offline' && newAmount !== oldAmount) {
+            await connection.rollback();
+            return res.status(403).json({ error: "Security Restriction: You cannot edit the amount of a verified online contribution." });
+        }
+
+        // 3. Update Database Record
+        await connection.query(`
+            UPDATE contributions SET contributor_name = ?, project_id = ?, amount = ? 
+            WHERE contribution_id = ?
+        `, [contributor_name, validNewProjectId, newAmount, contribution_id]);
+
+        // 4. Perfect Math Correction
+        if (newAmount !== oldAmount || oldProjectId !== validNewProjectId) {
+            // First, completely reverse the old transaction math...
+            await connection.query(`UPDATE organizations SET total_received = total_received - ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [oldAmount, oldAmount, contrib.organization_id]);
+            if (oldProjectId) {
+                await connection.query(`UPDATE organization_projects SET total_received = total_received - ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [oldAmount, oldAmount, oldProjectId]);
+            }
+
+            // ...Then, apply the new transaction math.
+            await connection.query(`UPDATE organizations SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE organization_id = ?`, [newAmount, newAmount, contrib.organization_id]);
+            if (validNewProjectId) {
+                await connection.query(`UPDATE organization_projects SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [newAmount, newAmount, validNewProjectId]);
+            }
+        }
+
+        await connection.commit();
+        res.status(200).json({ success: true, message: "Contribution updated successfully." });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Edit Contribution Error:", error);
+        res.status(500).json({ error: "Failed to update contribution." });
+    } finally {
+        if (connection) connection.release();
+    }
+};
