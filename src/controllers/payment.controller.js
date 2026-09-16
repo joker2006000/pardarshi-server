@@ -2,12 +2,54 @@ const db = require('../config/db');
 const cashfreeService = require('../services/cashfree.service');
 
 // ==========================================
+// HELPER: Convert Marathi/Hindi Digits to English
+// ==========================================
+const convertToEnglishDigits = (str) => {
+    if (!str) return "";
+    const devanagariDigits = {'०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9'};
+    // Convert regional numbers to English, then remove any non-number characters (like spaces or text)
+    let englishStr = String(str).replace(/[०-९]/g, match => devanagariDigits[match]);
+    return englishStr.replace(/\D/g, ''); 
+};
+
+// ==========================================
 // 1. CONTRIBUTIONS (Incoming Money)
 // ==========================================
 exports.initiateFormPayment = async (req, res) => {
     const connection = await db.getConnection();
     try {
-        const { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
+        let { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
+
+        // ==========================================
+        // SMART MARATHI FIELD EXTRACTION
+        // ==========================================
+        if (answers && typeof answers === 'object') {
+            for (const [key, value] of Object.entries(answers)) {
+                const lowerKey = key.toLowerCase();
+                
+                // Extract Mobile if missing
+                if (!contributor_mobile && (lowerKey.includes('मोबाईल') || lowerKey.includes('फोन') || lowerKey.includes('mobile') || lowerKey.includes('phone'))) {
+                    contributor_mobile = value;
+                }
+                // Extract Name if missing
+                if (!contributor_name && (lowerKey.includes('नाव') || lowerKey.includes('name') || lowerKey.includes('पूर्ण नाव'))) {
+                    contributor_name = value;
+                }
+                // Extract Email if missing
+                if (!contributor_email && (lowerKey.includes('ई-मेल') || lowerKey.includes('ईमेल') || lowerKey.includes('email'))) {
+                    contributor_email = value;
+                }
+            }
+        }
+
+        // Clean the extracted mobile number (converts Marathi digits to English and strips text)
+        const cleanMobile = convertToEnglishDigits(contributor_mobile);
+        const finalPhone = (cleanMobile && cleanMobile.length >= 10) ? cleanMobile.substring(0, 10) : "9999999999";
+
+        // Provide fallbacks for Name and Email so Cashfree never crashes
+        const finalName = contributor_name || "Guest Donor";
+        const finalEmail = contributor_email || "noemail@example.com";
+        // ==========================================
 
         const [forms] = await connection.query(`
             SELECT f.organization_id, o.name as org_name, o.email as org_email, o.mobile_no as org_mobile,
@@ -46,21 +88,23 @@ exports.initiateFormPayment = async (req, res) => {
 
         await connection.beginTransaction();
 
+        // Save submission with the cleaned final values
         const [submissionResult] = await connection.query(`
             INSERT INTO form_submissions (form_id, organization_id, contributor_name, contributor_email, contributor_mobile, answers, ip_address)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [form_id, orgDetails.organization_id, contributor_name, contributor_email, contributor_mobile, JSON.stringify(answers), req.ip]);
+        `, [form_id, orgDetails.organization_id, finalName, finalEmail, finalPhone, JSON.stringify(answers), req.ip]);
         
         const submissionId = submissionResult.insertId;
         const cashfreeOrderId = `ORD_CONT_${submissionId}_${Date.now()}`;
 
+        // Send cleaned data to Cashfree
         const orderResponse = await cashfreeService.createOrder({
             order_id: cashfreeOrderId,
             amount: amount,
             customer_id: `CUST_${Date.now()}`,
-            customer_name: contributor_name,
-            customer_email: contributor_email,
-            customer_phone: contributor_mobile,
+            customer_name: finalName,
+            customer_email: finalEmail,
+            customer_phone: finalPhone,
             vendor_id: vendorId,
             tags: {
                 transaction_type: "contribution",
