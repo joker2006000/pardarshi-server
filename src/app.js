@@ -1,8 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
+// NEW: Import rate limit package
+const rateLimit = require('express-rate-limit'); 
 
 // Route Imports
 const authRoutes = require('./routes/auth.routes');
@@ -11,8 +12,9 @@ const memberRoutes = require('./routes/member.routes');
 const projectRoutes = require('./routes/project.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const formRoutes = require('./routes/form.routes');
-// NEW: Import the Transaction routes
 const transactionRoutes = require('./routes/transaction.routes');
+// NEW: Import public routes
+const publicRoutes = require('./routes/public.routes'); 
 
 const app = express();
 
@@ -20,33 +22,36 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
-
-// Helmet configuration
-//app.use(helmet({ 
-   // crossOriginResourcePolicy: false,
-   // contentSecurityPolicy: false 
-//}));
 app.use(morgan('dev'));
 
-// Static files (Uploads - kept for any legacy local files)
+// Static files 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Mount Routes
+// Mount Protected Admin Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/organization', organizationRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/project', projectRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/forms', formRoutes);
-// NEW: Mount the Transaction routes
 app.use('/api/transactions', transactionRoutes);
+
+// NEW: Configure Rate Limiter for public endpoints (prevents spam/scraping)
+const publicLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute window
+    max: 60, // Limit each IP to 60 requests per window
+    message: { success: false, message: "Too many requests. Please try again in a minute." }
+});
+
+// NEW: Mount Public Routes with the Limiter
+app.use('/api/public', publicLimiter, publicRoutes);
 
 // Health Check
 app.get('/', (req, res) => {
     res.send('PARDARSHI API is running...');
 });
 
-// Serve the dynamic form HTML file from the root folder
+// Serve the dynamic form HTML file
 app.get('/form/:public_slug', (req, res) => {
     res.sendFile(path.join(__dirname, '../../front end/public-form.html')); 
 });
