@@ -7,7 +7,6 @@ const cashfreeService = require('../services/cashfree.service');
 const convertToEnglishDigits = (str) => {
     if (!str) return "";
     const devanagariDigits = {'०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9'};
-    // Convert regional numbers to English, then remove any non-number characters (like spaces or text)
     let englishStr = String(str).replace(/[०-९]/g, match => devanagariDigits[match]);
     return englishStr.replace(/\D/g, ''); 
 };
@@ -20,9 +19,7 @@ exports.initiateFormPayment = async (req, res) => {
     try {
         let { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
 
-        // ==========================================
-        // SMART MARATHI FIELD EXTRACTION
-        // ==========================================
+        // Smart Marathi Field Extraction
         if (answers && typeof answers === 'object') {
             for (const [key, value] of Object.entries(answers)) {
                 const lowerKey = key.toLowerCase();
@@ -42,14 +39,13 @@ exports.initiateFormPayment = async (req, res) => {
             }
         }
 
-        // Clean the extracted mobile number (converts Marathi digits to English and strips text)
+        // Clean mobile number (converts Marathi digits to English and strips text)
         const cleanMobile = convertToEnglishDigits(contributor_mobile);
         const finalPhone = (cleanMobile && cleanMobile.length >= 10) ? cleanMobile.substring(0, 10) : "9999999999";
 
-        // Provide fallbacks for Name and Email so Cashfree never crashes
+        // Provide fallbacks for Name and Email
         const finalName = contributor_name || "Guest Donor";
         const finalEmail = contributor_email || "noemail@example.com";
-        // ==========================================
 
         const [forms] = await connection.query(`
             SELECT f.organization_id, o.name as org_name, o.email as org_email, o.mobile_no as org_mobile,
@@ -88,7 +84,6 @@ exports.initiateFormPayment = async (req, res) => {
 
         await connection.beginTransaction();
 
-        // Save submission with the cleaned final values
         const [submissionResult] = await connection.query(`
             INSERT INTO form_submissions (form_id, organization_id, contributor_name, contributor_email, contributor_mobile, answers, ip_address)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -97,10 +92,9 @@ exports.initiateFormPayment = async (req, res) => {
         const submissionId = submissionResult.insertId;
         const cashfreeOrderId = `ORD_CONT_${submissionId}_${Date.now()}`;
 
-        // Send cleaned data to Cashfree
         const orderResponse = await cashfreeService.createOrder({
             order_id: cashfreeOrderId,
-            amount: amount,
+            amount: parseFloat(amount),
             customer_id: `CUST_${Date.now()}`,
             customer_name: finalName,
             customer_email: finalEmail,
@@ -132,7 +126,6 @@ exports.initiateFormPayment = async (req, res) => {
     }
 };
 
-
 // ==========================================
 // 2. EXPENSES (Outgoing Money)
 // ==========================================
@@ -141,42 +134,60 @@ exports.initiateExpensePayment = async (req, res) => {
     try {
         const { organization_id, project_id, amount, expense_title, description, vendor_name, vendor_upi_id, vendor_bank_account, vendor_ifsc, created_by } = req.body;
 
-        // 1. Auto-Create Vendor in Cashfree for the receiver
+        // 1. Enforce Project Selection & Validation
+        if (!project_id || project_id === "" || project_id === "0" || project_id === 0) {
+            return res.status(400).json({ error: "Project selection is mandatory for registering expenses." });
+        }
+        if (!amount || parseFloat(amount) <= 0) {
+            return res.status(400).json({ error: "A valid positive amount is required." });
+        }
+
+        const [projectCheck] = await connection.query(
+            `SELECT project_id, name FROM organization_projects WHERE project_id = ? AND organization_id = ?`,
+            [project_id, organization_id]
+        );
+        if (projectCheck.length === 0) {
+            return res.status(404).json({ error: "Selected project not found under this organization." });
+        }
+
+        // 2. Auto-Create Vendor in Cashfree for the receiver
         const expenseVendorId = `VEND_${Date.now()}`;
         await cashfreeService.createVendor({
             vendor_id: expenseVendorId,
-            name: vendor_name,
-            email: "vendor@pardarshi.com", // Dummy email for third party
-            phone: "9999999999", // Dummy phone
-            bank_account: vendor_bank_account,
-            ifsc: vendor_ifsc,
-            upi_id: vendor_upi_id
+            name: vendor_name || "Vendor",
+            email: "vendor@pardarshi.com",
+            phone: "9999999999",
+            bank_account: vendor_bank_account || null,
+            ifsc: vendor_ifsc || null,
+            upi_id: vendor_upi_id || null
         });
 
         await connection.beginTransaction();
 
-        // 2. Save Pending Expense in DB
+        // 3. Save Pending Expense in DB strictly assigned to the project
         const [expenseResult] = await connection.query(`
-            INSERT INTO expenses (organization_id, project_id, title, description, amount, expense_date, is_online_payment, payment_status, created_by)
-            VALUES (?, ?, ?, ?, ?, CURDATE(), TRUE, 'pending', ?)
-        `, [organization_id, project_id || null, expense_title, description, amount, created_by]);
+            INSERT INTO expenses (
+                organization_id, project_id, title, description, amount, 
+                expense_date, is_online_payment, payment_mode, payment_status, status, created_by
+            ) VALUES (?, ?, ?, ?, ?, CURDATE(), TRUE, 'online', 'pending', 'pending', ?)
+        `, [organization_id, project_id, expense_title, description || null, parseFloat(amount), created_by || 1]);
         
         const expenseId = expenseResult.insertId;
         const cashfreeOrderId = `ORD_EXP_${expenseId}_${Date.now()}`;
 
-        // 3. Generate Cashfree Order where the Organization pays, and 100% goes to this new Vendor
+        // 4. Generate Cashfree Order
         const orderResponse = await cashfreeService.createOrder({
             order_id: cashfreeOrderId,
-            amount: amount,
+            amount: parseFloat(amount),
             customer_id: `ORG_CUST_${organization_id}`,
             customer_name: "Organization Expense",
-            customer_phone: "9999999999", // Can be updated to org's actual phone if desired
+            customer_phone: "9999999999",
             vendor_id: expenseVendorId,
             tags: {
                 transaction_type: "expense",
                 org_id: organization_id.toString(),
                 expense_id: expenseId.toString(),
-                project_id: project_id ? project_id.toString() : "0"
+                project_id: project_id.toString()
             }
         });
 
@@ -197,7 +208,6 @@ exports.initiateExpensePayment = async (req, res) => {
     }
 };
 
-
 // ==========================================
 // 3. WEBHOOK (Handles Both Types)
 // ==========================================
@@ -212,9 +222,8 @@ exports.cashfreeWebhook = async (req, res) => {
             
             const transactionType = order.order_tags.transaction_type || "contribution";
             const orgId = order.order_tags.org_id;
-            const projectId = order.order_tags.project_id !== "0" ? order.order_tags.project_id : null;
-            const actualAmountPaid = paymentData.payment_amount;
-            const paymentMethod = paymentData.payment_group; 
+            const actualAmountPaid = parseFloat(paymentData.payment_amount);
+            const paymentMethod = paymentData.payment_group || "online"; 
             
             const extraDetails = JSON.stringify({
                 cashfree_payment_id: paymentData.cf_payment_id,
@@ -227,34 +236,75 @@ exports.cashfreeWebhook = async (req, res) => {
                 const [existing] = await db.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order.order_id]);
                 if (existing.length > 0) return res.status(200).send("Already processed");
 
+                let targetProjectId = order.order_tags.project_id !== "0" ? order.order_tags.project_id : null;
+                if (!targetProjectId && order.order_tags.form_id) {
+                    const [proj] = await db.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [order.order_tags.form_id]);
+                    if (proj.length > 0) targetProjectId = proj[0].project_id;
+                }
+
                 await db.query(`
                     INSERT INTO contributions (
                         organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
                         amount, payment_status, payment_gateway, payment_id, payment_method, notes
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
-                `, [orgId, projectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, extraDetails]);
+                `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, extraDetails]);
 
-                await db.query(`UPDATE organizations SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE organization_id = ?`, [actualAmountPaid, actualAmountPaid, orgId]);
-                if (projectId) {
-                    await db.query(`UPDATE organization_projects SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [actualAmountPaid, actualAmountPaid, projectId]);
+                // Math Updates for Contributions
+                await db.query(`
+                    UPDATE organizations 
+                    SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
+                    WHERE organization_id = ?
+                `, [actualAmountPaid, actualAmountPaid, orgId]);
+
+                if (targetProjectId) {
+                    await db.query(`
+                        UPDATE organization_projects 
+                        SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
+                        WHERE project_id = ?
+                    `, [actualAmountPaid, actualAmountPaid, targetProjectId]);
                 }
             } 
             
             // Handle Expense
             else if (transactionType === "expense") {
                 const expenseId = order.order_tags.expense_id;
-                const [existing] = await db.query(`SELECT payment_status FROM expenses WHERE expense_id = ?`, [expenseId]);
-                if (existing.length > 0 && existing[0].payment_status === 'paid') return res.status(200).send("Already processed");
+                const [existing] = await db.query(
+                    `SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, 
+                    [expenseId]
+                );
 
+                if (existing.length === 0) return res.status(200).send("Expense record not found");
+                if (existing[0].payment_status === 'success') return res.status(200).send("Already processed");
+
+                const targetOrgId = existing[0].organization_id || orgId;
+                const targetProjectId = existing[0].project_id || (order.order_tags.project_id !== "0" ? order.order_tags.project_id : null);
+
+                // Set payment_status to 'success' to conform to database ENUM
                 await db.query(`
                     UPDATE expenses 
-                    SET payment_status = 'paid', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
+                    SET payment_status = 'success', 
+                        status = 'paid', 
+                        payment_mode = 'online',
+                        payment_gateway = 'cashfree', 
+                        payment_id = ?, 
+                        payment_method = ?, 
+                        paid_at = NOW() 
                     WHERE expense_id = ?
                 `, [order.order_id, paymentMethod, expenseId]);
 
-                await db.query(`UPDATE organizations SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [actualAmountPaid, actualAmountPaid, orgId]);
-                if (projectId) {
-                    await db.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [actualAmountPaid, actualAmountPaid, projectId]);
+                // Math Updates: Deduct from Organization and Project balances
+                await db.query(`
+                    UPDATE organizations 
+                    SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? 
+                    WHERE organization_id = ?
+                `, [actualAmountPaid, actualAmountPaid, targetOrgId]);
+
+                if (targetProjectId) {
+                    await db.query(`
+                        UPDATE organization_projects 
+                        SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? 
+                        WHERE project_id = ?
+                    `, [actualAmountPaid, actualAmountPaid, targetProjectId]);
                 }
             }
         }
@@ -266,7 +316,7 @@ exports.cashfreeWebhook = async (req, res) => {
 };
 
 // ==========================================
-// 4. VERIFY RETURN (Handles Both Types)
+// 4. VERIFY RETURN (Active Verification)
 // ==========================================
 exports.verifyPayment = async (req, res) => {
     const { order_id } = req.params;
@@ -277,47 +327,99 @@ exports.verifyPayment = async (req, res) => {
         const orderData = cashfreeResponse.data;
 
         if (orderData.order_status === 'PAID') {
-            const tags = orderData.order_tags;
+            const tags = orderData.order_tags || {};
             const transactionType = tags.transaction_type || "contribution";
-            const projectId = tags.project_id !== "0" ? tags.project_id : null;
             const paymentMethod = "online"; 
+            const paidAmount = parseFloat(orderData.order_amount);
 
             await connection.beginTransaction();
 
             if (transactionType === "contribution") {
                 const [existing] = await connection.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order_id]);
                 if (existing.length === 0) {
+                    let targetProjectId = tags.project_id && tags.project_id !== "0" ? tags.project_id : null;
+                    if (!targetProjectId && tags.form_id) {
+                        const [proj] = await connection.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [tags.form_id]);
+                        if (proj.length > 0) targetProjectId = proj[0].project_id;
+                    }
+
                     await connection.query(`
                         INSERT INTO contributions (
                             organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
                             amount, payment_status, payment_gateway, payment_id, payment_method, notes
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
-                    `, [tags.org_id, projectId, tags.form_id, tags.submission_id, orderData.customer_details.customer_name, orderData.customer_details.customer_email, orderData.customer_details.customer_phone, orderData.order_amount, order_id, paymentMethod, "Verified via Return URL"]);
+                    `, [tags.org_id, targetProjectId, tags.form_id, tags.submission_id, orderData.customer_details.customer_name, orderData.customer_details.customer_email, orderData.customer_details.customer_phone, paidAmount, order_id, paymentMethod, "Verified via Return URL"]);
 
-                    await connection.query(`UPDATE organizations SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE organization_id = ?`, [orderData.order_amount, orderData.order_amount, tags.org_id]);
-                    if (projectId) {
-                        await connection.query(`UPDATE organization_projects SET total_received = total_received + ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [orderData.order_amount, orderData.order_amount, projectId]);
+                    await connection.query(`
+                        UPDATE organizations 
+                        SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
+                        WHERE organization_id = ?
+                    `, [paidAmount, paidAmount, tags.org_id]);
+
+                    if (targetProjectId) {
+                        await connection.query(`
+                            UPDATE organization_projects 
+                            SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
+                            WHERE project_id = ?
+                        `, [paidAmount, paidAmount, targetProjectId]);
                     }
                 }
             } 
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
-                const [existing] = await connection.query(`SELECT payment_status FROM expenses WHERE expense_id = ?`, [expenseId]);
-                if (existing.length > 0 && existing[0].payment_status !== 'paid') {
+                
+                // Read directly from the expense record to guarantee correct project identification
+                const [existing] = await connection.query(
+                    `SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, 
+                    [expenseId]
+                );
+
+                if (existing.length > 0 && existing[0].payment_status !== 'success') {
+                    const targetOrgId = existing[0].organization_id || tags.org_id;
+                    const targetProjectId = existing[0].project_id || (tags.project_id !== "0" ? tags.project_id : null);
+
+                    // Update expense using ENUM 'success'
                     await connection.query(`
-                        UPDATE expenses SET payment_status = 'paid', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
+                        UPDATE expenses 
+                        SET payment_status = 'success', 
+                            status = 'paid', 
+                            payment_mode = 'online',
+                            payment_gateway = 'cashfree', 
+                            payment_id = ?, 
+                            payment_method = ?, 
+                            paid_at = NOW() 
                         WHERE expense_id = ?
                     `, [order_id, paymentMethod, expenseId]);
 
-                    await connection.query(`UPDATE organizations SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [orderData.order_amount, orderData.order_amount, tags.org_id]);
-                    if (projectId) {
-                        await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [orderData.order_amount, orderData.order_amount, projectId]);
+                    // Math update: Organization level
+                    await connection.query(`
+                        UPDATE organizations 
+                        SET total_expenses = total_expenses + ?, 
+                            remaining_balance = remaining_balance - ? 
+                            WHERE organization_id = ?
+                    `, [paidAmount, paidAmount, targetOrgId]);
+
+                    // Math update: Project level
+                    if (targetProjectId) {
+                        await connection.query(`
+                            UPDATE organization_projects 
+                            SET total_expenses = total_expenses + ?, 
+                                remaining_balance = remaining_balance - ? 
+                            WHERE project_id = ?
+                        `, [paidAmount, paidAmount, targetProjectId]);
                     }
                 }
             }
 
             await connection.commit();
-            return res.status(200).json({ success: true, status: 'PAID', amount: orderData.order_amount });
+            return res.status(200).json({ 
+                success: true, 
+                status: 'PAID', 
+                amount: paidAmount,
+                thank_you_message: transactionType === 'expense' 
+                    ? "Expense payment successfully completed and recorded to the project." 
+                    : null
+            });
         } else {
             return res.status(200).json({ success: true, status: orderData.order_status });
         }
