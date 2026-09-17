@@ -284,3 +284,26 @@ exports.editContribution = async (req, res) => {
         if (connection) connection.release();
     }
 };
+
+
+// ==========================================
+// 6. GET EXPENSE DOCUMENTS (For Gallery Modal)
+// ==========================================
+exports.getExpenseDocuments = async (req, res) => {
+    try {
+        const { expense_id } = req.params;
+        
+        // Fetch all documents associated with this specific expense
+        const [documents] = await db.query(
+            `SELECT document_id, file_url, file_name, file_type 
+             FROM expense_documents 
+             WHERE expense_id = ?`, 
+            [expense_id]
+        );
+        
+        res.status(200).json({ success: true, data: documents });
+    } catch (error) {
+        console.error("Fetch Expense Documents Error:", error);
+        res.status(500).json({ error: "Failed to fetch documents." });
+    }
+};
