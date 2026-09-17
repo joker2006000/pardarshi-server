@@ -1,14 +1,25 @@
 const pool = require('../config/db');
 
+// Helper function to generate a URL-safe slug
+const generateSlug = (text) => {
+    return text.toString().toLowerCase()
+        .replace(/\s+/g, '-')           // Replace spaces with -
+        .replace(/[^\w\-]+/g, '')       // Remove all non-word chars
+        .replace(/\-\-+/g, '-')         // Replace multiple - with single -
+        .replace(/^-+/, '')             // Trim - from start of text
+        .replace(/-+$/, '');            // Trim - from end of text
+};
+
 // ==========================================
-// FETCH PROJECTS (WITH SMART IMAGE FALLBACK)
+// FETCH PROJECTS (WITH SELF-HEALING SLUGS & SMART IMAGES)
 // ==========================================
 exports.getOrganizationProjects = async (req, res) => {
     try {
         const { orgId } = req.params;
 
+        // Added op.slug to the SELECT query
         const [projects] = await pool.query(
-            `SELECT op.project_id, op.name, op.description, op.created_at, op.picture_url AS base_pic,
+            `SELECT op.project_id, op.name, op.slug, op.description, op.created_at, op.picture_url AS base_pic,
                     f.picture_url AS form_pic,
                     (SELECT JSON_ARRAYAGG(pp.picture_url) 
                      FROM project_pictures pp 
@@ -19,6 +30,8 @@ exports.getOrganizationProjects = async (req, res) => {
              ORDER BY op.created_at DESC`,
             [orgId]
         );
+
+        const projectsNeedingSlugs = [];
 
         const processedProjects = projects.map(proj => {
             let finalPictures = [];
@@ -37,24 +50,44 @@ exports.getOrganizationProjects = async (req, res) => {
                 finalPictures = [proj.form_pic];
             }
 
+            // SELF-HEALING SLUG LOGIC
+            let currentSlug = proj.slug;
+            if (!currentSlug) {
+                // Generate a base slug from the name, and append the project_id to guarantee 100% database uniqueness
+                currentSlug = `${generateSlug(proj.name)}-${proj.project_id}`;
+                projectsNeedingSlugs.push([currentSlug, proj.project_id]);
+            }
+
             return {
                 project_id: proj.project_id,
                 name: proj.name,
+                slug: currentSlug,
                 description: proj.description,
                 created_at: proj.created_at,
                 pictures: finalPictures
             };
         });
 
+        // Send the perfect data to the frontend immediately
         res.status(200).json({ success: true, data: processedProjects });
+
+        // BACKGROUND TASK: Update missing slugs in the database without blocking the frontend response
+        if (projectsNeedingSlugs.length > 0) {
+            Promise.all(projectsNeedingSlugs.map(([newSlug, id]) => 
+                pool.query(`UPDATE organization_projects SET slug = ? WHERE project_id = ?`, [newSlug, id])
+            )).catch(err => console.error("Background slug generation failed:", err));
+        }
+
     } catch (error) {
         console.error(error);
-        res.status(500).json({ success: false, error: "Server Error" });
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, error: "Server Error" });
+        }
     }
 };
 
 // ==========================================
-// CREATE NEW PROJECT
+// CREATE NEW PROJECT (NOW INCLUDES SLUG)
 // ==========================================
 exports.createProject = async (req, res) => {
     const connection = await pool.getConnection();
@@ -64,10 +97,24 @@ exports.createProject = async (req, res) => {
         const { orgId } = req.params;
         const { name, description } = req.body;
 
+        // Generate initial slug
+        let baseSlug = generateSlug(name);
+        
+        // Ensure slug is unique before inserting
+        const [existing] = await connection.query(
+            `SELECT slug FROM organization_projects WHERE slug = ?`, 
+            [baseSlug]
+        );
+        
+        if (existing.length > 0) {
+            // Append a short random string if the exact name already exists
+            baseSlug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
+        }
+
         const [projectResult] = await connection.query(
-            `INSERT INTO organization_projects (organization_id, name, description) 
-             VALUES (?, ?, ?)`,
-            [orgId, name, description]
+            `INSERT INTO organization_projects (organization_id, name, slug, description) 
+             VALUES (?, ?, ?, ?)`,
+            [orgId, name, baseSlug, description]
         );
         const projectId = projectResult.insertId;
 
@@ -85,7 +132,12 @@ exports.createProject = async (req, res) => {
         }
 
         await connection.commit();
-        res.status(201).json({ success: true, message: "Project and images saved successfully", project_id: projectId });
+        res.status(201).json({ 
+            success: true, 
+            message: "Project and images saved successfully", 
+            project_id: projectId,
+            slug: baseSlug
+        });
     } catch (error) {
         await connection.rollback();
         console.error(error);
@@ -240,7 +292,9 @@ exports.deleteProject = async (req, res) => {
     } catch (error) {
         await connection.rollback();
         console.error(error);
-        res.status(500).json({ success: false, error: "Server Error" });
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, error: "Server Error" });
+        }
     } finally {
         connection.release();
     }
