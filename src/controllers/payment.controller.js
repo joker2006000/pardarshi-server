@@ -11,6 +11,52 @@ const convertToEnglishDigits = (str) => {
     return englishStr.replace(/\D/g, ''); 
 };
 
+//  HELPER: Real WhatsApp Notification 
+// ==========================================
+const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) => {
+    try {
+        const whatsappUrl = process.env.WHATSAPP_SERVER_URL;
+        if (!whatsappUrl) {
+            console.log("WhatsApp server URL not configured in .env");
+            return;
+        }
+
+        const connection = await db.getConnection();
+        let orgName = "Organization";
+        let projectName = "General Fund";
+
+        try {
+            const [orgs] = await connection.query(`SELECT name FROM organizations WHERE organization_id = ?`, [orgId]);
+            if (orgs.length > 0) orgName = orgs[0].name;
+
+            if (projectId) {
+                const [projs] = await connection.query(`SELECT name FROM organization_projects WHERE project_id = ?`, [projectId]);
+                if (projs.length > 0) projectName = projs[0].name;
+            }
+        } finally {
+            connection.release();
+        }
+
+        // Send to the real contributor's mobile number
+        await fetch(`${whatsappUrl}/api/send-message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                phone: phone, // Dynamic real number passed from webhook/verify
+                name: name || "Contributor",
+                amount: amount,
+                projectName: projectName,
+                organizationName: orgName,
+                link: `http://localhost:3000/organization/org-${orgId}` 
+            })
+        });
+        console.log(`WhatsApp notification triggered for ${phone}.`);
+    } catch (error) {
+        console.error("WhatsApp Trigger Error:", error.message);
+    }
+};
+// ==========================================
+
 // ==========================================
 // 1. CONTRIBUTIONS (Incoming Money)
 // ==========================================
@@ -19,31 +65,23 @@ exports.initiateFormPayment = async (req, res) => {
     try {
         let { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
 
-        // Smart Marathi Field Extraction
         if (answers && typeof answers === 'object') {
             for (const [key, value] of Object.entries(answers)) {
                 const lowerKey = key.toLowerCase();
-                
-                // Extract Mobile if missing
                 if (!contributor_mobile && (lowerKey.includes('मोबाईल') || lowerKey.includes('फोन') || lowerKey.includes('mobile') || lowerKey.includes('phone'))) {
                     contributor_mobile = value;
                 }
-                // Extract Name if missing
                 if (!contributor_name && (lowerKey.includes('नाव') || lowerKey.includes('name') || lowerKey.includes('पूर्ण नाव'))) {
                     contributor_name = value;
                 }
-                // Extract Email if missing
                 if (!contributor_email && (lowerKey.includes('ई-मेल') || lowerKey.includes('ईमेल') || lowerKey.includes('email'))) {
                     contributor_email = value;
                 }
             }
         }
 
-        // Clean mobile number (converts Marathi digits to English and strips text)
         const cleanMobile = convertToEnglishDigits(contributor_mobile);
         const finalPhone = (cleanMobile && cleanMobile.length >= 10) ? cleanMobile.substring(0, 10) : "9999999999";
-
-        // Provide fallbacks for Name and Email
         const finalName = contributor_name || "Guest Donor";
         const finalEmail = contributor_email || "noemail@example.com";
 
@@ -134,7 +172,6 @@ exports.initiateExpensePayment = async (req, res) => {
     try {
         const { organization_id, project_id, amount, expense_title, description, vendor_name, vendor_upi_id, vendor_bank_account, vendor_ifsc, created_by } = req.body;
 
-        // 1. Enforce Project Selection & Validation
         if (!project_id || project_id === "" || project_id === "0" || project_id === 0) {
             return res.status(400).json({ error: "Project selection is mandatory for registering expenses." });
         }
@@ -150,7 +187,6 @@ exports.initiateExpensePayment = async (req, res) => {
             return res.status(404).json({ error: "Selected project not found under this organization." });
         }
 
-        // 2. Auto-Create Vendor in Cashfree for the receiver
         const expenseVendorId = `VEND_${Date.now()}`;
         await cashfreeService.createVendor({
             vendor_id: expenseVendorId,
@@ -164,7 +200,6 @@ exports.initiateExpensePayment = async (req, res) => {
 
         await connection.beginTransaction();
 
-        // 3. Save Pending Expense in DB strictly assigned to the project
         const [expenseResult] = await connection.query(`
             INSERT INTO expenses (
                 organization_id, project_id, title, description, amount, 
@@ -175,7 +210,6 @@ exports.initiateExpensePayment = async (req, res) => {
         const expenseId = expenseResult.insertId;
         const cashfreeOrderId = `ORD_EXP_${expenseId}_${Date.now()}`;
 
-        // 4. Generate Cashfree Order
         const orderResponse = await cashfreeService.createOrder({
             order_id: cashfreeOrderId,
             amount: parseFloat(amount),
@@ -249,7 +283,6 @@ exports.cashfreeWebhook = async (req, res) => {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
                 `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, extraDetails]);
 
-                // Math Updates for Contributions
                 await db.query(`
                     UPDATE organizations 
                     SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
@@ -263,6 +296,9 @@ exports.cashfreeWebhook = async (req, res) => {
                         WHERE project_id = ?
                     `, [actualAmountPaid, actualAmountPaid, targetProjectId]);
                 }
+                
+                // ADDED: Trigger real WhatsApp message on webhook
+                await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId);
             } 
             
             // Handle Expense
@@ -279,7 +315,6 @@ exports.cashfreeWebhook = async (req, res) => {
                 const targetOrgId = existing[0].organization_id || orgId;
                 const targetProjectId = existing[0].project_id || (order.order_tags.project_id !== "0" ? order.order_tags.project_id : null);
 
-                // Set payment_status to 'success' to conform to database ENUM
                 await db.query(`
                     UPDATE expenses 
                     SET payment_status = 'success', 
@@ -292,7 +327,6 @@ exports.cashfreeWebhook = async (req, res) => {
                     WHERE expense_id = ?
                 `, [order.order_id, paymentMethod, expenseId]);
 
-                // Math Updates: Deduct from Organization and Project balances
                 await db.query(`
                     UPDATE organizations 
                     SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? 
@@ -363,12 +397,13 @@ exports.verifyPayment = async (req, res) => {
                             WHERE project_id = ?
                         `, [paidAmount, paidAmount, targetProjectId]);
                     }
+                    
+                    //  Trigger real WhatsApp message on return verification
+                    await sendWhatsAppNotification(orderData.customer_details.customer_name, orderData.customer_details.customer_phone, paidAmount, tags.org_id, targetProjectId);
                 }
             } 
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
-                
-                // Read directly from the expense record to guarantee correct project identification
                 const [existing] = await connection.query(
                     `SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, 
                     [expenseId]
@@ -378,7 +413,6 @@ exports.verifyPayment = async (req, res) => {
                     const targetOrgId = existing[0].organization_id || tags.org_id;
                     const targetProjectId = existing[0].project_id || (tags.project_id !== "0" ? tags.project_id : null);
 
-                    // Update expense using ENUM 'success'
                     await connection.query(`
                         UPDATE expenses 
                         SET payment_status = 'success', 
@@ -391,7 +425,6 @@ exports.verifyPayment = async (req, res) => {
                         WHERE expense_id = ?
                     `, [order_id, paymentMethod, expenseId]);
 
-                    // Math update: Organization level
                     await connection.query(`
                         UPDATE organizations 
                         SET total_expenses = total_expenses + ?, 
@@ -399,7 +432,6 @@ exports.verifyPayment = async (req, res) => {
                             WHERE organization_id = ?
                     `, [paidAmount, paidAmount, targetOrgId]);
 
-                    // Math update: Project level
                     if (targetProjectId) {
                         await connection.query(`
                             UPDATE organization_projects 
@@ -418,7 +450,9 @@ exports.verifyPayment = async (req, res) => {
                 amount: paidAmount,
                 thank_you_message: transactionType === 'expense' 
                     ? "Expense payment successfully completed and recorded to the project." 
-                    : null
+                    : null,
+                transaction_type: transactionType, 
+                org_id: tags.org_id                
             });
         } else {
             return res.status(200).json({ success: true, status: orderData.order_status });
