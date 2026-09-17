@@ -13,9 +13,14 @@ const convertToEnglishDigits = (str) => {
 
 //  ADDED: HELPER: Real WhatsApp Notification
 // ==========================================
+// ==========================================
+//  ADDED: HELPER: Real WhatsApp Notification
+// ==========================================
 const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) => {
     try {
         const whatsappUrl = process.env.WHATSAPP_SERVER_URL;
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'; // Uses your env variable
+        
         if (!whatsappUrl) {
             console.log("WhatsApp server URL not configured in .env");
             return;
@@ -23,19 +28,29 @@ const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) =
 
         const connection = await db.getConnection();
         let orgName = "Organization";
+        let orgSlug = ""; // Variable to hold the slug for the link
         let projectName = "General Fund";
 
         try {
-            const [orgs] = await connection.query(`SELECT name FROM organizations WHERE organization_id = ?`, [orgId]);
-            if (orgs.length > 0) orgName = orgs[0].name;
+            // Updated query: Fetch both name AND slug
+            const [orgs] = await connection.query(`SELECT name, slug FROM organizations WHERE organization_id = ?`, [orgId]);
+            if (orgs.length > 0) {
+                orgName = orgs[0].name;
+                orgSlug = orgs[0].slug;
+            }
 
             if (projectId) {
                 const [projs] = await connection.query(`SELECT name FROM organization_projects WHERE project_id = ?`, [projectId]);
-                if (projs.length > 0) projectName = projs[0].name;
+                if (projs.length > 0) {
+                    projectName = projs[0].name;
+                }
             }
         } finally {
             connection.release();
         }
+
+        // Construct the correct dynamic public link
+        const profileLink = `${frontendUrl}/org.html?org=${orgSlug}`;
 
         // Send to the real contributor's mobile number
         await fetch(`${whatsappUrl}/api/send-message`, {
@@ -47,13 +62,11 @@ const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) =
                 amount: amount,
                 projectName: projectName,
                 organizationName: orgName,
-                link: `http://localhost:3000/organization/org-${orgId}` 
+                link: profileLink // Send the dynamic profile link
             })
         });
-        console.log(`WhatsApp notification triggered for ${phone}.`);
     } catch (error) {
-        // This catch ensures payment processing never crashes if WhatsApp fails
-        console.error("WhatsApp Trigger Error:", error.message);
+        console.error("WhatsApp Notification Error:", error);
     }
 };
 // ==========================================
