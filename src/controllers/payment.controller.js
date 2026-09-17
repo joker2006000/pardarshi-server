@@ -11,7 +11,7 @@ const convertToEnglishDigits = (str) => {
     return englishStr.replace(/\D/g, ''); 
 };
 
-//  HELPER: Real WhatsApp Notification 
+//  ADDED: HELPER: Real WhatsApp Notification
 // ==========================================
 const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) => {
     try {
@@ -42,7 +42,7 @@ const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) =
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                phone: phone, // Dynamic real number passed from webhook/verify
+                phone: phone, 
                 name: name || "Contributor",
                 amount: amount,
                 projectName: projectName,
@@ -52,6 +52,7 @@ const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) =
         });
         console.log(`WhatsApp notification triggered for ${phone}.`);
     } catch (error) {
+        // This catch ensures payment processing never crashes if WhatsApp fails
         console.error("WhatsApp Trigger Error:", error.message);
     }
 };
@@ -68,6 +69,7 @@ exports.initiateFormPayment = async (req, res) => {
         if (answers && typeof answers === 'object') {
             for (const [key, value] of Object.entries(answers)) {
                 const lowerKey = key.toLowerCase();
+                
                 if (!contributor_mobile && (lowerKey.includes('मोबाईल') || lowerKey.includes('फोन') || lowerKey.includes('mobile') || lowerKey.includes('phone'))) {
                     contributor_mobile = value;
                 }
@@ -82,6 +84,7 @@ exports.initiateFormPayment = async (req, res) => {
 
         const cleanMobile = convertToEnglishDigits(contributor_mobile);
         const finalPhone = (cleanMobile && cleanMobile.length >= 10) ? cleanMobile.substring(0, 10) : "9999999999";
+
         const finalName = contributor_name || "Guest Donor";
         const finalEmail = contributor_email || "noemail@example.com";
 
@@ -283,6 +286,7 @@ exports.cashfreeWebhook = async (req, res) => {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
                 `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, extraDetails]);
 
+                // Math Updates for Contributions
                 await db.query(`
                     UPDATE organizations 
                     SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
@@ -296,8 +300,8 @@ exports.cashfreeWebhook = async (req, res) => {
                         WHERE project_id = ?
                     `, [actualAmountPaid, actualAmountPaid, targetProjectId]);
                 }
-                
-                // ADDED: Trigger real WhatsApp message on webhook
+
+                // ADDED: Trigger Real WhatsApp Notification
                 await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId);
             } 
             
@@ -397,13 +401,14 @@ exports.verifyPayment = async (req, res) => {
                             WHERE project_id = ?
                         `, [paidAmount, paidAmount, targetProjectId]);
                     }
-                    
-                    //  Trigger real WhatsApp message on return verification
+
+                    //Trigger Real WhatsApp Notification
                     await sendWhatsAppNotification(orderData.customer_details.customer_name, orderData.customer_details.customer_phone, paidAmount, tags.org_id, targetProjectId);
                 }
             } 
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
+                
                 const [existing] = await connection.query(
                     `SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, 
                     [expenseId]
@@ -443,7 +448,7 @@ exports.verifyPayment = async (req, res) => {
                 }
             }
 
-            await connection.commit();
+          await connection.commit();
             return res.status(200).json({ 
                 success: true, 
                 status: 'PAID', 
