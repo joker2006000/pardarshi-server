@@ -2,54 +2,12 @@ const db = require('../config/db');
 const cashfreeService = require('../services/cashfree.service');
 
 // ==========================================
-// HELPER: Convert Marathi/Hindi Digits to English
-// ==========================================
-const convertToEnglishDigits = (str) => {
-    if (!str) return "";
-    const devanagariDigits = {'०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9'};
-    // Convert regional numbers to English, then remove any non-number characters (like spaces or text)
-    let englishStr = String(str).replace(/[०-९]/g, match => devanagariDigits[match]);
-    return englishStr.replace(/\D/g, ''); 
-};
-
-// ==========================================
 // 1. CONTRIBUTIONS (Incoming Money)
 // ==========================================
 exports.initiateFormPayment = async (req, res) => {
     const connection = await db.getConnection();
     try {
-        let { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
-
-        // ==========================================
-        // SMART MARATHI FIELD EXTRACTION
-        // ==========================================
-        if (answers && typeof answers === 'object') {
-            for (const [key, value] of Object.entries(answers)) {
-                const lowerKey = key.toLowerCase();
-                
-                // Extract Mobile if missing
-                if (!contributor_mobile && (lowerKey.includes('मोबाईल') || lowerKey.includes('फोन') || lowerKey.includes('mobile') || lowerKey.includes('phone'))) {
-                    contributor_mobile = value;
-                }
-                // Extract Name if missing
-                if (!contributor_name && (lowerKey.includes('नाव') || lowerKey.includes('name') || lowerKey.includes('पूर्ण नाव'))) {
-                    contributor_name = value;
-                }
-                // Extract Email if missing
-                if (!contributor_email && (lowerKey.includes('ई-मेल') || lowerKey.includes('ईमेल') || lowerKey.includes('email'))) {
-                    contributor_email = value;
-                }
-            }
-        }
-
-        // Clean the extracted mobile number (converts Marathi digits to English and strips text)
-        const cleanMobile = convertToEnglishDigits(contributor_mobile);
-        const finalPhone = (cleanMobile && cleanMobile.length >= 10) ? cleanMobile.substring(0, 10) : "9999999999";
-
-        // Provide fallbacks for Name and Email so Cashfree never crashes
-        const finalName = contributor_name || "Guest Donor";
-        const finalEmail = contributor_email || "noemail@example.com";
-        // ==========================================
+        const { form_id, amount, contributor_name, contributor_email, contributor_mobile, answers } = req.body;
 
         const [forms] = await connection.query(`
             SELECT f.organization_id, o.name as org_name, o.email as org_email, o.mobile_no as org_mobile,
@@ -88,23 +46,21 @@ exports.initiateFormPayment = async (req, res) => {
 
         await connection.beginTransaction();
 
-        // Save submission with the cleaned final values
         const [submissionResult] = await connection.query(`
             INSERT INTO form_submissions (form_id, organization_id, contributor_name, contributor_email, contributor_mobile, answers, ip_address)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [form_id, orgDetails.organization_id, finalName, finalEmail, finalPhone, JSON.stringify(answers), req.ip]);
+        `, [form_id, orgDetails.organization_id, contributor_name, contributor_email, contributor_mobile, JSON.stringify(answers), req.ip]);
         
         const submissionId = submissionResult.insertId;
         const cashfreeOrderId = `ORD_CONT_${submissionId}_${Date.now()}`;
 
-        // Send cleaned data to Cashfree
         const orderResponse = await cashfreeService.createOrder({
             order_id: cashfreeOrderId,
             amount: amount,
             customer_id: `CUST_${Date.now()}`,
-            customer_name: finalName,
-            customer_email: finalEmail,
-            customer_phone: finalPhone,
+            customer_name: contributor_name,
+            customer_email: contributor_email,
+            customer_phone: contributor_mobile,
             vendor_id: vendorId,
             tags: {
                 transaction_type: "contribution",
@@ -132,7 +88,6 @@ exports.initiateFormPayment = async (req, res) => {
     }
 };
 
-
 // ==========================================
 // 2. EXPENSES (Outgoing Money)
 // ==========================================
@@ -140,6 +95,11 @@ exports.initiateExpensePayment = async (req, res) => {
     const connection = await db.getConnection();
     try {
         const { organization_id, project_id, amount, expense_title, description, vendor_name, vendor_upi_id, vendor_bank_account, vendor_ifsc, created_by } = req.body;
+
+        // NEW FIX: Enforce project selection to ensure expenses are mapped properly
+        if (!project_id) {
+            return res.status(400).json({ error: "Project selection is mandatory for expenses." });
+        }
 
         // 1. Auto-Create Vendor in Cashfree for the receiver
         const expenseVendorId = `VEND_${Date.now()}`;
@@ -159,7 +119,7 @@ exports.initiateExpensePayment = async (req, res) => {
         const [expenseResult] = await connection.query(`
             INSERT INTO expenses (organization_id, project_id, title, description, amount, expense_date, is_online_payment, payment_status, created_by)
             VALUES (?, ?, ?, ?, ?, CURDATE(), TRUE, 'pending', ?)
-        `, [organization_id, project_id || null, expense_title, description, amount, created_by]);
+        `, [organization_id, project_id, expense_title, description, amount, created_by]);
         
         const expenseId = expenseResult.insertId;
         const cashfreeOrderId = `ORD_EXP_${expenseId}_${Date.now()}`;
@@ -176,7 +136,7 @@ exports.initiateExpensePayment = async (req, res) => {
                 transaction_type: "expense",
                 org_id: organization_id.toString(),
                 expense_id: expenseId.toString(),
-                project_id: project_id ? project_id.toString() : "0"
+                project_id: project_id.toString()
             }
         });
 
@@ -196,7 +156,6 @@ exports.initiateExpensePayment = async (req, res) => {
         if (connection) connection.release();
     }
 };
-
 
 // ==========================================
 // 3. WEBHOOK (Handles Both Types)
@@ -244,11 +203,14 @@ exports.cashfreeWebhook = async (req, res) => {
             else if (transactionType === "expense") {
                 const expenseId = order.order_tags.expense_id;
                 const [existing] = await db.query(`SELECT payment_status FROM expenses WHERE expense_id = ?`, [expenseId]);
-                if (existing.length > 0 && existing[0].payment_status === 'paid') return res.status(200).send("Already processed");
+                
+                // NEW FIX: Changed from 'paid' to 'success' to match database ENUM
+                if (existing.length > 0 && existing[0].payment_status === 'success') return res.status(200).send("Already processed");
 
+                // NEW FIX: Set payment_status to 'success' instead of 'paid'
                 await db.query(`
                     UPDATE expenses 
-                    SET payment_status = 'paid', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
+                    SET payment_status = 'success', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
                     WHERE expense_id = ?
                 `, [order.order_id, paymentMethod, expenseId]);
 
@@ -303,9 +265,13 @@ exports.verifyPayment = async (req, res) => {
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
                 const [existing] = await connection.query(`SELECT payment_status FROM expenses WHERE expense_id = ?`, [expenseId]);
-                if (existing.length > 0 && existing[0].payment_status !== 'paid') {
+                
+                // NEW FIX: Check against 'success' instead of 'paid'
+                if (existing.length > 0 && existing[0].payment_status !== 'success') {
+                    
+                    // NEW FIX: Set payment_status to 'success'
                     await connection.query(`
-                        UPDATE expenses SET payment_status = 'paid', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
+                        UPDATE expenses SET payment_status = 'success', status = 'paid', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
                         WHERE expense_id = ?
                     `, [order_id, paymentMethod, expenseId]);
 
