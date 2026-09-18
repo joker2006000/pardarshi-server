@@ -1,5 +1,6 @@
 const db = require('../config/db'); 
 const cashfreeService = require('../services/cashfree.service');
+const crypto = require('crypto');
 
 // ==========================================
 // HELPER: Convert Marathi/Hindi Digits to English
@@ -16,7 +17,7 @@ const convertToEnglishDigits = (str) => {
 // ==========================================
 //  ADDED: HELPER: Real WhatsApp Notification
 // ==========================================
-const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) => {
+const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId, accessToken) => {
     try {
         const whatsappUrl = process.env.WHATSAPP_SERVER_URL;
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'; // Uses your env variable
@@ -50,7 +51,7 @@ const sendWhatsAppNotification = async (name, phone, amount, orgId, projectId) =
         }
 
         // Construct the correct dynamic public link
-        const profileLink = `${frontendUrl}/org.html?org=${orgSlug}`;
+       const profileLink = `${frontendUrl}/org?org=${orgSlug}&token=${accessToken}`;
 
         // Send to the real contributor's mobile number
         await fetch(`${whatsappUrl}/api/send-message`, {
@@ -292,12 +293,17 @@ exports.cashfreeWebhook = async (req, res) => {
                     if (proj.length > 0) targetProjectId = proj[0].project_id;
                 }
 
+                // Generate the unguessable magic token
+                const secureToken = crypto.randomBytes(16).toString('hex');
+
+                // Add access_token to the INSERT query
                 await db.query(`
                     INSERT INTO contributions (
                         organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
-                        amount, payment_status, payment_gateway, payment_id, payment_method, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
-                `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, extraDetails]);
+                        amount, payment_status, payment_gateway, payment_id, payment_method, access_token, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?, ?)
+                `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, secureToken, extraDetails]);
+
 
                 // Math Updates for Contributions
                 await db.query(`
@@ -315,7 +321,7 @@ exports.cashfreeWebhook = async (req, res) => {
                 }
 
                 // ADDED: Trigger Real WhatsApp Notification
-                await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId);
+               await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId, secureToken);
             } 
             
             // Handle Expense
@@ -385,22 +391,26 @@ exports.verifyPayment = async (req, res) => {
 
             await connection.beginTransaction();
 
-            if (transactionType === "contribution") {
-                const [existing] = await connection.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order_id]);
-                if (existing.length === 0) {
-                    let targetProjectId = tags.project_id && tags.project_id !== "0" ? tags.project_id : null;
-                    if (!targetProjectId && tags.form_id) {
-                        const [proj] = await connection.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [tags.form_id]);
-                        if (proj.length > 0) targetProjectId = proj[0].project_id;
-                    }
+             if (transactionType === "contribution") {
+                const [existing] = await db.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order.order_id]);
+                if (existing.length > 0) return res.status(200).send("Already processed");
 
-                    await connection.query(`
-                        INSERT INTO contributions (
-                            organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
-                            amount, payment_status, payment_gateway, payment_id, payment_method, notes
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?)
-                    `, [tags.org_id, targetProjectId, tags.form_id, tags.submission_id, orderData.customer_details.customer_name, orderData.customer_details.customer_email, orderData.customer_details.customer_phone, paidAmount, order_id, paymentMethod, "Verified via Return URL"]);
+                let targetProjectId = order.order_tags.project_id !== "0" ? order.order_tags.project_id : null;
+                if (!targetProjectId && order.order_tags.form_id) {
+                    const [proj] = await db.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [order.order_tags.form_id]);
+                    if (proj.length > 0) targetProjectId = proj[0].project_id;
+                }
 
+                // Generate the unguessable magic token
+                const secureToken = crypto.randomBytes(16).toString('hex');
+
+                // Add access_token to the INSERT query
+                await db.query(`
+                    INSERT INTO contributions (
+                        organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
+                        amount, payment_status, payment_gateway, payment_id, payment_method, access_token, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?, ?)
+                `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, secureToken, extraDetails]);
                     await connection.query(`
                         UPDATE organizations 
                         SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
@@ -416,9 +426,9 @@ exports.verifyPayment = async (req, res) => {
                     }
 
                     //Trigger Real WhatsApp Notification
-                    await sendWhatsAppNotification(orderData.customer_details.customer_name, orderData.customer_details.customer_phone, paidAmount, tags.org_id, targetProjectId);
-                }
+                     await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId, secureToken);             
             } 
+            
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
                 
