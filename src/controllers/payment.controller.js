@@ -391,26 +391,40 @@ exports.verifyPayment = async (req, res) => {
 
             await connection.beginTransaction();
 
-             if (transactionType === "contribution") {
-                const [existing] = await db.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order.order_id]);
-                if (existing.length > 0) return res.status(200).send("Already processed");
+            if (transactionType === "contribution") {
+                const [existing] = await connection.query(`SELECT contribution_id FROM contributions WHERE payment_id = ?`, [order_id]);
+                
+                if (existing.length === 0) {
+                    let targetProjectId = tags.project_id && tags.project_id !== "0" ? tags.project_id : null;
+                    if (!targetProjectId && tags.form_id) {
+                        const [proj] = await connection.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [tags.form_id]);
+                        if (proj.length > 0) targetProjectId = proj[0].project_id;
+                    }
 
-                let targetProjectId = order.order_tags.project_id !== "0" ? order.order_tags.project_id : null;
-                if (!targetProjectId && order.order_tags.form_id) {
-                    const [proj] = await db.query(`SELECT project_id FROM organization_projects WHERE form_id = ?`, [order.order_tags.form_id]);
-                    if (proj.length > 0) targetProjectId = proj[0].project_id;
-                }
+                    // Generate the secure token
+                    const secureToken = require('crypto').randomBytes(16).toString('hex');
 
-                // Generate the unguessable magic token
-                const secureToken = crypto.randomBytes(16).toString('hex');
+                    // Insert using order_id and orderData (NO 'order' variables)
+                    await connection.query(`
+                        INSERT INTO contributions (
+                            organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
+                            amount, payment_status, payment_gateway, payment_id, payment_method, access_token, notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?, ?)
+                    `, [
+                        tags.org_id, 
+                        targetProjectId, 
+                        tags.form_id, 
+                        tags.submission_id, 
+                        orderData.customer_details.customer_name, 
+                        orderData.customer_details.customer_email, 
+                        orderData.customer_details.customer_phone, 
+                        paidAmount, 
+                        order_id, 
+                        paymentMethod, 
+                        secureToken, 
+                        "Verified via Return URL"
+                    ]);
 
-                // Add access_token to the INSERT query
-                await db.query(`
-                    INSERT INTO contributions (
-                        organization_id, project_id, form_id, submission_id, contributor_name, contributor_email, contributor_mobile, 
-                        amount, payment_status, payment_gateway, payment_id, payment_method, access_token, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'cashfree', ?, ?, ?, ?)
-                `, [orgId, targetProjectId, order.order_tags.form_id, order.order_tags.submission_id, customer.customer_name, customer.customer_email, customer.customer_phone, actualAmountPaid, order.order_id, paymentMethod, secureToken, extraDetails]);
                     await connection.query(`
                         UPDATE organizations 
                         SET total_received = total_received + ?, remaining_balance = remaining_balance + ? 
@@ -425,17 +439,20 @@ exports.verifyPayment = async (req, res) => {
                         `, [paidAmount, paidAmount, targetProjectId]);
                     }
 
-                    //Trigger Real WhatsApp Notification
-                     await sendWhatsAppNotification(customer.customer_name, customer.customer_phone, actualAmountPaid, orgId, targetProjectId, secureToken);             
+                    // Trigger Real WhatsApp Notification
+                    await sendWhatsAppNotification(
+                        orderData.customer_details.customer_name, 
+                        orderData.customer_details.customer_phone, 
+                        paidAmount, 
+                        tags.org_id, 
+                        targetProjectId, 
+                        secureToken
+                    );
+                }
             } 
-            
             else if (transactionType === "expense") {
                 const expenseId = tags.expense_id;
-                
-                const [existing] = await connection.query(
-                    `SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, 
-                    [expenseId]
-                );
+                const [existing] = await connection.query(`SELECT expense_id, organization_id, project_id, payment_status FROM expenses WHERE expense_id = ?`, [expenseId]);
 
                 if (existing.length > 0 && existing[0].payment_status !== 'success') {
                     const targetOrgId = existing[0].organization_id || tags.org_id;
@@ -443,42 +460,24 @@ exports.verifyPayment = async (req, res) => {
 
                     await connection.query(`
                         UPDATE expenses 
-                        SET payment_status = 'success', 
-                            status = 'paid', 
-                            payment_mode = 'online',
-                            payment_gateway = 'cashfree', 
-                            payment_id = ?, 
-                            payment_method = ?, 
-                            paid_at = NOW() 
+                        SET payment_status = 'success', status = 'paid', payment_mode = 'online', payment_gateway = 'cashfree', payment_id = ?, payment_method = ?, paid_at = NOW() 
                         WHERE expense_id = ?
                     `, [order_id, paymentMethod, expenseId]);
 
-                    await connection.query(`
-                        UPDATE organizations 
-                        SET total_expenses = total_expenses + ?, 
-                            remaining_balance = remaining_balance - ? 
-                            WHERE organization_id = ?
-                    `, [paidAmount, paidAmount, targetOrgId]);
+                    await connection.query(`UPDATE organizations SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [paidAmount, paidAmount, targetOrgId]);
 
                     if (targetProjectId) {
-                        await connection.query(`
-                            UPDATE organization_projects 
-                            SET total_expenses = total_expenses + ?, 
-                                remaining_balance = remaining_balance - ? 
-                            WHERE project_id = ?
-                        `, [paidAmount, paidAmount, targetProjectId]);
+                        await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [paidAmount, paidAmount, targetProjectId]);
                     }
                 }
             }
 
-          await connection.commit();
+            await connection.commit();
             return res.status(200).json({ 
                 success: true, 
                 status: 'PAID', 
                 amount: paidAmount,
-                thank_you_message: transactionType === 'expense' 
-                    ? "Expense payment successfully completed and recorded to the project." 
-                    : null,
+                thank_you_message: transactionType === 'expense' ? "Expense payment successfully completed and recorded to the project." : null,
                 transaction_type: transactionType, 
                 org_id: tags.org_id                
             });
