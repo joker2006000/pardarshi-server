@@ -91,7 +91,7 @@ exports.getPublicProjectTransactions = async (req, res) => {
         // 2. Fetch Contributions (Includes Notes, Dates, and Amounts)
         const [contributions] = await db.query(
             `SELECT contributor_name, amount, payment_method, payment_status, notes, 
-                    created_at, updated_at
+                    created_at
              FROM contributions 
              WHERE project_id = ? AND payment_status = 'success'
              ORDER BY created_at DESC`,
