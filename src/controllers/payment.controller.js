@@ -196,12 +196,21 @@ exports.initiateExpensePayment = async (req, res) => {
             return res.status(400).json({ error: "A valid positive amount is required." });
         }
 
+        // Verify project exists and has sufficient funds
         const [projectCheck] = await connection.query(
-            `SELECT project_id, name FROM organization_projects WHERE project_id = ? AND organization_id = ?`,
+            `SELECT project_id, name, remaining_balance FROM organization_projects WHERE project_id = ? AND organization_id = ?`,
             [project_id, organization_id]
         );
+        
         if (projectCheck.length === 0) {
             return res.status(404).json({ error: "Selected project not found under this organization." });
+        }
+
+        // NEW: Strict Insufficient Funds Check
+        if (parseFloat(amount) > parseFloat(projectCheck[0].remaining_balance)) {
+            return res.status(400).json({ 
+                error: `Insufficient funds. This project only has ₹${projectCheck[0].remaining_balance} remaining.` 
+            });
         }
 
         const expenseVendorId = `VEND_${Date.now()}`;

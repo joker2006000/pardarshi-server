@@ -71,6 +71,20 @@ exports.addOfflineExpense = async (req, res) => {
     try {
         const { organization_id, project_id, title, description, amount, expense_date, category, created_by } = req.body;
         const validProjectId = project_id ? project_id : null;
+
+        // NEW: Strict Insufficient Funds Check for Offline Expenses
+        if (validProjectId) {
+            const [projCheck] = await connection.query(
+                `SELECT remaining_balance FROM organization_projects WHERE project_id = ?`, 
+                [validProjectId]
+            );
+            
+            if (projCheck.length > 0 && parseFloat(amount) > parseFloat(projCheck[0].remaining_balance)) {
+                return res.status(400).json({ 
+                    error: `Insufficient funds. This project only has ₹${projCheck[0].remaining_balance} remaining.` 
+                });
+            }
+        }
         
         await connection.beginTransaction();
 

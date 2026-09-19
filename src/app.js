@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const path = require('path');
-// NEW: Import rate limit package
 const rateLimit = require('express-rate-limit'); 
 
 // Route Imports
@@ -13,10 +12,19 @@ const projectRoutes = require('./routes/project.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const formRoutes = require('./routes/form.routes');
 const transactionRoutes = require('./routes/transaction.routes');
-// NEW: Import public routes
 const publicRoutes = require('./routes/public.routes'); 
 
 const app = express();
+
+// ==========================================
+// NEW: SOCKET.IO BRIDGE MIDDLEWARE
+// ==========================================
+// This grabs the 'io' instance from server.js and attaches it to 'req'.
+// Your report.controller.js will use req.io to emit live messages.
+app.use((req, res, next) => {
+    req.io = req.app.get('io');
+    next();
+});
 
 // Middlewares
 app.use(express.json());
@@ -36,14 +44,14 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/forms', formRoutes);
 app.use('/api/transactions', transactionRoutes);
 
-// NEW: Configure Rate Limiter for public endpoints (prevents spam/scraping)
+// Configure Rate Limiter for public endpoints
 const publicLimiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute window
-    max: 60, // Limit each IP to 60 requests per window
+    windowMs: 1 * 60 * 1000, 
+    max: 60, 
     message: { success: false, message: "Too many requests. Please try again in a minute." }
 });
 
-// NEW: Mount Public Routes with the Limiter
+// Mount Public Routes with the Limiter
 app.use('/api/public', publicLimiter, publicRoutes);
 
 // Health Check
