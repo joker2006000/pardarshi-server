@@ -141,8 +141,10 @@ exports.getReportDetailsAndChat = async (req, res) => {
         const { report_id } = req.params;
 
         // 1. Fetch deep metadata about the report, the project, and the specific transaction
+       // 1. Fetch deep metadata about the report, the project, and the specific transaction
         const [reportMeta] = await db.query(
             `SELECT r.report_id, r.subject, r.status, r.created_at, r.guest_name, r.guest_email,
+                    r.expense_id, r.contribution_id, 
                     p.name AS project_name, p.slug AS project_slug,
                     e.title AS expense_title, e.amount AS expense_amount, e.expense_date,
                     c.amount AS contribution_amount, c.payment_method, c.created_at AS contribution_date
