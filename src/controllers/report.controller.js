@@ -10,12 +10,34 @@ exports.createReport = async (req, res) => {
         }
 
         const { organization_id, project_id, expense_id, contribution_id, subject, message_text } = req.body;
-        const guest = req.guest; // Attached by verifyGuestToken middleware
+        const guest = req.guest; 
         const guestToken = req.headers['x-guest-token'] || req.body.guest_token;
 
         const connection = await db.getConnection();
         try {
             await connection.beginTransaction();
+
+            // ==========================================
+            // PREVENT DUPLICATE REPORTS
+            // ==========================================
+            if (expense_id || contribution_id) {
+                const [existingReport] = await connection.query(
+                    `SELECT report_id FROM reports 
+                     WHERE access_token = ? 
+                     AND (expense_id = ? OR contribution_id = ?) 
+                     LIMIT 1`,
+                    [guestToken, expense_id || null, contribution_id || null]
+                );
+
+                if (existingReport.length > 0) {
+                    await connection.rollback(); 
+                    // The connection will automatically be released in the 'finally' block below
+                    return res.status(400).json({ 
+                        success: false, 
+                        message: "You have already created a report for this specific transaction." 
+                    });
+                }
+            }
 
             // 1. Create the main report thread
             const [reportResult] = await connection.query(
@@ -50,7 +72,8 @@ exports.createReport = async (req, res) => {
             await connection.rollback();
             throw dbError;
         } finally {
-            connection.release();
+            // This safely releases the connection whether the request succeeds, fails, or is blocked as a duplicate.
+            if (connection) connection.release();
         }
     } catch (error) {
         console.error("Create Report Error:", error);
