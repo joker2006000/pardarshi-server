@@ -16,6 +16,10 @@ const publicRoutes = require('./routes/public.routes');
 
 const app = express();
 
+// notification push
+
+app.use('/api/push', require('./routes/push.routes'));
+
 // ==========================================
 // NEW: SOCKET.IO BRIDGE MIDDLEWARE
 // ==========================================

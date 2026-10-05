@@ -4,6 +4,7 @@ const { Server } = require('socket.io'); // NEW: Import Socket.io
 
 const app = require('./app');
 const db = require('./config/db'); 
+require('./services/push.worker');
 const cashfreeService = require('./services/cashfree.service');
 const PORT = process.env.PORT || 3000;
 
