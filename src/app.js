@@ -33,9 +33,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 app.use(morgan('dev'));
 
-// Static files 
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-
 // ==========================================
 // MOUNT ROUTES
 // ==========================================
