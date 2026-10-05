@@ -13,24 +13,21 @@ const paymentRoutes = require('./routes/payment.routes');
 const formRoutes = require('./routes/form.routes');
 const transactionRoutes = require('./routes/transaction.routes');
 const publicRoutes = require('./routes/public.routes'); 
+const pushRoutes = require('./routes/push.routes'); // <-- Import here
 
 const app = express();
 
-// notification push
-
-app.use('/api/push', require('./routes/push.routes'));
-
 // ==========================================
-// NEW: SOCKET.IO BRIDGE MIDDLEWARE
+// SOCKET.IO BRIDGE MIDDLEWARE
 // ==========================================
-// This grabs the 'io' instance from server.js and attaches it to 'req'.
-// Your report.controller.js will use req.io to emit live messages.
 app.use((req, res, next) => {
     req.io = req.app.get('io');
     next();
 });
 
-// Middlewares
+// ==========================================
+// MIDDLEWARES (Must come before routes!)
+// ==========================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
@@ -38,6 +35,12 @@ app.use(morgan('dev'));
 
 // Static files 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+// ==========================================
+// MOUNT ROUTES
+// ==========================================
+// Mount the new Push route HERE, after express.json()
+app.use('/api/push', pushRoutes);
 
 // Mount Protected Admin Routes
 app.use('/api/auth', authRoutes);
@@ -57,20 +60,3 @@ const publicLimiter = rateLimit({
 
 // Mount Public Routes with the Limiter
 app.use('/api/public', publicLimiter, publicRoutes);
-
-// Health Check
-app.get('/', (req, res) => {
-    res.send('PARDARSHI API is running...');
-});
-
-// Serve the dynamic form HTML file
-app.get('/form/:public_slug', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../front end/public-form.html')); 
-});
-
-// Serve the payment status page
-app.get('/payment-status', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../front end/payment-status.html'));
-});
-
-module.exports = app;
