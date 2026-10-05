@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
-const path = require('path');
 const rateLimit = require('express-rate-limit'); 
 
 // Route Imports
@@ -57,3 +56,4 @@ const publicLimiter = rateLimit({
 
 // Mount Public Routes with the Limiter
 app.use('/api/public', publicLimiter, publicRoutes);
+module.exports = app;
