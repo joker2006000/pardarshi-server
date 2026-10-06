@@ -1,9 +1,10 @@
-const admin = require('firebase-admin');
+const { initializeApp, getApps, cert } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 const db = require('../config/db');
 const fs = require('fs');
 
 // Initialize Firebase Admin (Smart Path Detection)
-if (!admin.apps.length) {
+if (getApps().length === 0) {
     let serviceAccount;
     
     // Check if running on the live Render server
@@ -15,10 +16,8 @@ if (!admin.apps.length) {
         serviceAccount = require('../config/firebase-service-account.json');
     }
 
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    initializeApp({ credential: cert(serviceAccount) });
 }
-
-// ... (keep the rest of your processPushQueue code exactly the same below here)
 
 const processPushQueue = async () => {
     try {
@@ -38,7 +37,8 @@ const processPushQueue = async () => {
             const tokens = subs.map(sub => sub.fcm_token).filter(Boolean);
 
             if (tokens.length > 0) {
-                await admin.messaging().sendEachForMulticast({
+                // Use getMessaging() instead of admin.messaging()
+                await getMessaging().sendEachForMulticast({
                     tokens: tokens,
                     notification: { title: task.title, body: task.body },
                     android: {
@@ -48,7 +48,7 @@ const processPushQueue = async () => {
                     data: { url: task.url || '/mobile-start' }
                 });
             }
-
+            
             await db.query(`UPDATE notification_queue SET status = 'processed' WHERE id = ?`, [task.id]);
         }
     } catch (error) {
