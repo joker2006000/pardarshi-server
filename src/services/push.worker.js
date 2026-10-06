@@ -1,10 +1,24 @@
 const admin = require('firebase-admin');
 const db = require('../config/db');
-const serviceAccount = require('../config/firebase-service-account.json');
+const fs = require('fs');
 
+// Initialize Firebase Admin (Smart Path Detection)
 if (!admin.apps.length) {
+    let serviceAccount;
+    
+    // Check if running on the live Render server
+    if (fs.existsSync('/etc/secrets/firebase-service-account.json')) {
+        serviceAccount = require('/etc/secrets/firebase-service-account.json');
+    } 
+    // Fallback for your local computer
+    else {
+        serviceAccount = require('../config/firebase-service-account.json');
+    }
+
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 }
+
+// ... (keep the rest of your processPushQueue code exactly the same below here)
 
 const processPushQueue = async () => {
     try {
