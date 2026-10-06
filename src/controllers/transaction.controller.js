@@ -85,7 +85,7 @@ exports.addOfflineExpense = async (req, res) => {
                 });
             }
         }
-        
+
         await connection.beginTransaction();
 
         // 1. Insert Expense
@@ -112,6 +112,23 @@ exports.addOfflineExpense = async (req, res) => {
         if (validProjectId) {
             await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [amount, amount, validProjectId]);
         }
+
+        
+        // 5. QUEUE BROADCAST NOTIFICATION TO ALL CONTRIBUTORS
+        const [orgInfo] = await connection.query(`SELECT slug FROM organizations WHERE organization_id = ?`, [organization_id]);
+        if (orgInfo.length > 0) {
+            const orgSlug = orgInfo[0].slug;
+            const pushTitle = "New Expense Added";
+            const pushBody = `₹${amount} was spent for: ${title}`;
+            const pushUrl = validProjectId ? `/project?org=${orgSlug}` : `/org?org=${orgSlug}`;
+
+            await connection.query(
+                `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
+                 VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
+                [organization_id, pushTitle, pushBody, pushUrl]
+            );
+        }
+        
 
         await connection.commit();
         res.status(200).json({ success: true, message: "Offline expense added successfully." });
@@ -183,6 +200,22 @@ exports.editExpense = async (req, res) => {
                 [expense_id, file.location, file.originalname, file.mimetype]);
             });
             await Promise.all(documentQueries);
+
+            // --- NEW: QUEUE BROADCAST FOR PROOF DOCUMENTS ---
+            const [orgInfo] = await connection.query(`SELECT slug FROM organizations WHERE organization_id = ?`, [expense.organization_id]);
+            if (orgInfo.length > 0) {
+                const orgSlug = orgInfo[0].slug;
+                const pushTitle = "New Document Added";
+                const pushBody = `New proof attached to expense: ${title || 'Updated Transaction'}`;
+                const pushUrl = validNewProjectId ? `/project?org=${orgSlug}` : `/org?org=${orgSlug}`;
+
+                await connection.query(
+                    `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
+                     VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
+                    [expense.organization_id, pushTitle, pushBody, pushUrl]
+                );
+            }
+            // ------------------------------------------------
         }
 
         await connection.commit();

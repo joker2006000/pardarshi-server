@@ -121,13 +121,39 @@ exports.sendMessage = async (req, res) => {
                 );
             }
 
-            // 3. Update the main report status to reflect new activity
+          // 3. Update the main report status to reflect new activity
             const newStatus = role === 'organization' ? 'in_progress' : 'open';
             await connection.query(
                 `UPDATE reports SET status = ?, updated_at = NOW() WHERE report_id = ?`, 
                 [newStatus, report_id]
             );
 
+            // --- NEW: QUEUE THE NATIVE NOTIFICATION ---
+            const [reportInfo] = await connection.query(
+                `SELECT r.organization_id, r.access_token, r.subject, o.slug 
+                 FROM reports r 
+                 JOIN organizations o ON r.organization_id = o.organization_id 
+                 WHERE r.report_id = ?`,
+                [report_id]
+            );
+
+            if (reportInfo.length > 0) {
+                const { organization_id, access_token, subject, slug } = reportInfo[0];
+                
+                // If org sends message -> target the specific contributor's token
+                // If contributor sends message -> target NULL (which we will map to admins)
+                const pushGuestToken = role === 'organization' ? access_token : null;
+                const pushTitle = role === 'organization' ? `Reply: ${subject}` : `New Message: ${subject}`;
+                const pushBody = message_text ? (message_text.substring(0, 45) + '...') : 'New document attached.';
+                const pushUrl = `/support?org=${slug}`;
+
+                await connection.query(
+                    `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
+                     VALUES (?, ?, ?, ?, ?, 'pending')`,
+                    [organization_id, pushGuestToken, pushTitle, pushBody, pushUrl]
+                );
+            }
+            // ------------------------------------------
             await connection.commit();
 
             // NOTE: In Phase 1 (WebSockets), you will emit the event here!

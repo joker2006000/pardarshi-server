@@ -372,6 +372,22 @@ exports.cashfreeWebhook = async (req, res) => {
                         WHERE project_id = ?
                     `, [actualAmountPaid, actualAmountPaid, targetProjectId]);
                 }
+
+                // --- NEW: QUEUE BROADCAST FOR ONLINE EXPENSE ---
+                const [expenseDetails] = await db.query(
+                    `SELECT e.title, e.category, o.slug FROM expenses e JOIN organizations o ON e.organization_id = o.organization_id WHERE e.expense_id = ?`, 
+                    [expenseId]
+                );
+                
+                if (expenseDetails.length > 0) {
+                    const { title, category, slug } = expenseDetails[0];
+                    await db.query(
+                        `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
+                         VALUES (?, 'BROADCAST', 'New Expense Reported 💸', ?, ?, 'pending')`,
+                        [targetOrgId, `Amount: ₹${actualAmountPaid} | For: ${title} | Category: ${category || 'General'}`, `/org?org=${slug}`]
+                    );
+                }
+                // -----------------------------------------------
             }
         }
         res.status(200).send("Webhook processed successfully");
@@ -478,6 +494,21 @@ exports.verifyPayment = async (req, res) => {
                     if (targetProjectId) {
                         await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [paidAmount, paidAmount, targetProjectId]);
                     }
+                    // --- NEW: QUEUE BROADCAST FOR ONLINE EXPENSE ---
+                    const [expenseDetailsReturn] = await connection.query(
+                        `SELECT e.title, e.category, o.slug FROM expenses e JOIN organizations o ON e.organization_id = o.organization_id WHERE e.expense_id = ?`, 
+                        [expenseId]
+                    );
+                    
+                    if (expenseDetailsReturn.length > 0) {
+                        const { title, category, slug } = expenseDetailsReturn[0];
+                        await connection.query(
+                            `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
+                             VALUES (?, 'BROADCAST', 'New Expense Reported 💸', ?, ?, 'pending')`,
+                            [targetOrgId, `Amount: ₹${paidAmount} | For: ${title} | Category: ${category || 'General'}`, `/org?org=${slug}`]
+                        );
+                    }
+                    // -----------------------------------------------
                 }
             }
 
