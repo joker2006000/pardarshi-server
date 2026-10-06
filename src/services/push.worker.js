@@ -1,11 +1,10 @@
-const webpush = require('web-push');
+const admin = require('firebase-admin');
 const db = require('../config/db');
+const serviceAccount = require('../config/firebase-service-account.json');
 
-webpush.setVapidDetails(
-    'mailto:admin@pardarshi.com', 
-    process.env.VAPID_PUBLIC_KEY, 
-    process.env.VAPID_PRIVATE_KEY
-);
+if (!admin.apps.length) {
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+}
 
 const processPushQueue = async () => {
     try {
@@ -13,46 +12,33 @@ const processPushQueue = async () => {
         if (tasks.length === 0) return;
 
         for (const task of tasks) {
-            let query = `SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE organization_id = ?`;
+            let query = `SELECT fcm_token FROM push_subscriptions WHERE organization_id = ? AND fcm_token IS NOT NULL`;
             let params = [task.organization_id];
+            
             if (task.guest_token) {
                 query += ` AND guest_token = ?`;
                 params.push(task.guest_token);
             }
 
             const [subs] = await db.query(query, params);
-            
-            // Format payload with URL routing for your dynamic pages
-            const payload = JSON.stringify({ 
-                title: task.title, 
-                body: task.body,
-                url: task.url || '/'
-            });
+            const tokens = subs.map(sub => sub.fcm_token).filter(Boolean);
 
-            // CRITICAL: High urgency forces Android out of Doze mode when screen is off
-            const pushOptions = {
-                urgency: 'high',
-                TTL: 86400
-            };
+            if (tokens.length > 0) {
+                await admin.messaging().sendEachForMulticast({
+                    tokens: tokens,
+                    notification: { title: task.title, body: task.body },
+                    android: {
+                        priority: 'high',
+                        notification: { channelId: 'default', sound: 'default', visibility: 'public', priority: 'max' }
+                    },
+                    data: { url: task.url || '/mobile-start' }
+                });
+            }
 
-            const pushPromises = subs.map(sub => 
-                webpush.sendNotification(
-                    { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, 
-                    payload, 
-                    pushOptions
-                )
-                .catch(err => {
-                    if (err.statusCode === 410 || err.statusCode === 404) {
-                        db.query(`DELETE FROM push_subscriptions WHERE endpoint = ?`, [sub.endpoint]);
-                    }
-                })
-            );
-
-            await Promise.all(pushPromises);
             await db.query(`UPDATE notification_queue SET status = 'processed' WHERE id = ?`, [task.id]);
         }
     } catch (error) {
-        console.error("Push Worker Error:", error);
+        console.error("Native Push Worker Error:", error);
     }
 };
 
