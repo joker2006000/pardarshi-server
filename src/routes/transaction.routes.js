@@ -9,8 +9,6 @@ router.get('/:organization_id', transactionController.getTransactions);
 // 2. Add an offline expense with up to 5 proof documents
 router.post('/expense/offline', upload.array('proofs', 5), transactionController.addOfflineExpense);
 
-// ::: NEW: Add a manual online expense with up to 5 proof documents (Triggers AI Verification)
-router.post('/expense/online', upload.array('proofs', 5), transactionController.addOnlineExpense);
 
 // 3. Edit an existing expense
 router.put('/expense/:expense_id', upload.array('proofs', 5), transactionController.editExpense);
