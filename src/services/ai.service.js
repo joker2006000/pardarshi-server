@@ -1,44 +1,53 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const ai = new GoogleGenAI({});
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
-    // 1. Keep googleSearch, but REMOVE generationConfig to avoid API conflicts
-    const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash-002",
-        tools: [{ googleSearch: {} }] 
-    });
-
-    // 2. Instruct the AI to output raw JSON format explicitly
+    
+    // Prompt focused entirely on text extraction and web verification
     const prompt = `
     You are a strict financial auditor for the PARDARSHI transparency platform.
-    Analyze this receipt. Use your Google Search tool to verify the vendor name and address.
-    
-    You MUST return ONLY a raw JSON object. Do not include markdown formatting like \`\`\`json. 
-    Return EXACTLY these keys:
-    - "vendor_name": (string) The name of the business.
-    - "maps_vendor_found": (boolean) True ONLY if a physical shop or registered business exists on Google Maps/Search.
-    - "maps_address_match": (boolean) True if the address printed on the receipt matches the location data found on Google.
-    - "receipt_date": (string) YYYY-MM-DD format.
-    - "total_amount": (number) The final billed amount.
-    - "tax_amount": (number) Total taxes, 0 if none.
-    - "line_items": (array of strings) List of purchased items.
-    - "context_match": (boolean) Evaluate if the physical items logically align with the project expense title: "${expectedTitle}" and description: "${expectedDescription}".
-    - "anomaly_reason": (string or null) If context_match, maps_vendor_found, or maps_address_match is false, strictly explain why in one short English sentence.
+    Analyze this receipt. Use your Google Search tool to verify the vendor name and the address printed on the receipt.
+    Evaluate if the physical items logically align with the project expense title: "${expectedTitle}" and description: "${expectedDescription}".
     `;
 
-    const imagePart = {
-        inlineData: { data: imageBuffer.toString("base64"), mimeType: mimeType }
+    const receiptJsonSchema = {
+        type: "object",
+        properties: {
+            vendor_name: { type: "string", description: "The name of the business." },
+            maps_vendor_found: { type: "boolean", description: "True ONLY if a physical shop or registered business exists on Google Maps/Search." },
+            maps_address_match: { type: "boolean", description: "True if the address printed on the receipt matches the location data found on Google." },
+            receipt_date: { type: "string", description: "YYYY-MM-DD format." },
+            total_amount: { type: "number", description: "The final billed amount." },
+            tax_amount: { type: "number", description: "Total taxes, 0 if none." },
+            line_items: { type: "array", items: { type: "string" }, description: "List of purchased items." },
+            context_match: { type: "boolean", description: "True if items align with the expected project expense." },
+            anomaly_reason: { type: "string", description: "If any match is false, explain why in one short sentence. Otherwise leave empty." }
+        },
+        required: ["vendor_name", "maps_vendor_found", "maps_address_match", "receipt_date", "total_amount", "tax_amount", "line_items", "context_match", "anomaly_reason"]
     };
 
     try {
-        const result = await model.generateContent([prompt, imagePart]);
-        let responseText = result.response.text();
-        
-        // 3. Clean up the response just in case the AI wraps it in markdown blocks
-        responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        return JSON.parse(responseText);
+        const interaction = await ai.interactions.create({
+            model: "gemini-3.8-flash",
+            input: [
+                { type: "text", text: prompt },
+                { 
+                    type: "image", 
+                    data: imageBuffer.toString("base64"), 
+                    mime_type: mimeType 
+                }
+            ],
+            tools: [{ type: "google_search" }],
+            response_format: {
+                type: "text",
+                mime_type: "application/json",
+                schema: receiptJsonSchema
+            }
+        });
+
+        return JSON.parse(interaction.output_text);
+
     } catch (error) {
         console.error("Gemini API Error:", error);
         throw new Error("AI Processing Failed");
