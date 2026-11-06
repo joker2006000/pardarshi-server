@@ -18,6 +18,9 @@ const setOrgRole = (req, res, next) => {
 // Anyone who is logged in can view the data
 router.get('/:orgId/home', protect, orgController.getOrganizationHomeData);
 
+// NEW: Fetch pending AI anomalies for the internal web dashboard (Stage 1 Alert)
+router.get('/:orgId/anomalies', protect, orgController.getPendingAnomalies);
+
 // ONLY the 'owner' can update the organization details
 router.put(
     '/:orgId', 

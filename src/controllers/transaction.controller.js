@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const verificationService = require('../services/verification.service'); // <-- ADD THIS IMPORT
 
 // Helper function to generate date filter SQL
 const getDateFilterSQL = (filterType, dateColumn) => {
@@ -64,7 +65,7 @@ exports.getTransactions = async (req, res) => {
 };
 
 // ==========================================
-// 2. ADD OFFLINE EXPENSE (With Proofs)
+// 2. ADD OFFLINE EXPENSE 
 // ==========================================
 exports.addOfflineExpense = async (req, res) => {
     const connection = await db.getConnection();
@@ -72,32 +73,28 @@ exports.addOfflineExpense = async (req, res) => {
         const { organization_id, project_id, title, description, amount, expense_date, category, created_by } = req.body;
         const validProjectId = project_id ? project_id : null;
 
-        // NEW: Strict Insufficient Funds Check for Offline Expenses
+        // Strict Insufficient Funds Check[cite: 10]
         if (validProjectId) {
-            const [projCheck] = await connection.query(
-                `SELECT remaining_balance FROM organization_projects WHERE project_id = ?`, 
-                [validProjectId]
-            );
-            
+            const [projCheck] = await connection.query(`SELECT remaining_balance FROM organization_projects WHERE project_id = ?`, [validProjectId]);
             if (projCheck.length > 0 && parseFloat(amount) > parseFloat(projCheck[0].remaining_balance)) {
-                return res.status(400).json({ 
-                    error: `Insufficient funds. This project only has ₹${projCheck[0].remaining_balance} remaining.` 
-                });
+                return res.status(400).json({ error: `Insufficient funds. This project only has ₹${projCheck[0].remaining_balance} remaining.` });
             }
         }
 
         await connection.beginTransaction();
 
-        // 1. Insert Expense
+        // Insert Expense (Default to paid for offline)[cite: 10]
         const [expenseResult] = await connection.query(`
             INSERT INTO expenses (organization_id, project_id, title, description, amount, expense_date, category, payment_mode, payment_status, status, is_online_payment, created_by, paid_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', 'success', 'paid', FALSE, ?, NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', 'success', 'pending', FALSE, ?, NOW())
         `, [organization_id, validProjectId, title, description, amount, expense_date, category, created_by]);
         
         const expenseId = expenseResult.insertId;
 
-        // 2. Save AWS S3 Proof Documents
+        // Save S3 Documents[cite: 10]
+        let uploadedPrimaryFile = null;
         if (req.files && req.files.length > 0) {
+            uploadedPrimaryFile = req.files[0];
             const documentQueries = req.files.map(file => {
                 return connection.query(`INSERT INTO expense_documents (expense_id, file_url, file_name, file_type) VALUES (?, ?, ?, ?)`, 
                 [expenseId, file.location, file.originalname, file.mimetype]);
@@ -105,33 +102,22 @@ exports.addOfflineExpense = async (req, res) => {
             await Promise.all(documentQueries);
         }
 
-        // 3. Update Organization Math
+        // Update Math[cite: 10]
         await connection.query(`UPDATE organizations SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [amount, amount, organization_id]);
-        
-        // 4. Update Project Math
-        if (validProjectId) {
-            await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [amount, amount, validProjectId]);
-        }
-
-        
-        // 5. QUEUE BROADCAST NOTIFICATION TO ALL CONTRIBUTORS
-        const [orgInfo] = await connection.query(`SELECT slug FROM organizations WHERE organization_id = ?`, [organization_id]);
-        if (orgInfo.length > 0) {
-            const orgSlug = orgInfo[0].slug;
-            const pushTitle = "New Expense Added";
-            const pushBody = `₹${amount} was spent for: ${title}`;
-            const pushUrl = validProjectId ? `/project?org=${orgSlug}` : `/org?org=${orgSlug}`;
-
-            await connection.query(
-                `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
-                 VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
-                [organization_id, pushTitle, pushBody, pushUrl]
-            );
-        }
-        
+        if (validProjectId) await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [amount, amount, validProjectId]);
 
         await connection.commit();
-        res.status(200).json({ success: true, message: "Offline expense added successfully." });
+        res.status(200).json({ success: true, message: "Offline expense added. AI Verification pending." });
+
+        // Trigger AI Verification in Background
+        if (uploadedPrimaryFile) {
+            setImmediate(() => {
+                verificationService.runDocumentVerification({
+                    expenseId, organizationId: organization_id, projectId: validProjectId,
+                    primaryFile: uploadedPrimaryFile, claimedAmount: amount, title, description, createdBy: created_by
+                });
+            });
+        }
     } catch (error) {
         if (connection) await connection.rollback();
         console.error("Add Offline Expense Error:", error);
@@ -142,7 +128,7 @@ exports.addOfflineExpense = async (req, res) => {
 };
 
 // ==========================================
-// 3. EDIT EXPENSE (Updates Title, Desc, Project & Math)
+// 3. EDIT EXPENSE (Updates Title, Desc, Project, Math & Triggers AI Replacement)
 // ==========================================
 exports.editExpense = async (req, res) => {
     const { expense_id } = req.params;
@@ -153,12 +139,7 @@ exports.editExpense = async (req, res) => {
 
         await connection.beginTransaction();
 
-        // 1. Get current expense data
-        const [existing] = await connection.query(`
-            SELECT organization_id, amount, project_id, payment_status, is_online_payment 
-            FROM expenses WHERE expense_id = ?
-        `, [expense_id]);
-        
+        const [existing] = await connection.query(`SELECT organization_id, amount, project_id, payment_status, is_online_payment FROM expenses WHERE expense_id = ?`, [expense_id]);
         if (existing.length === 0) throw new Error("Expense not found");
         
         const expense = existing[0];
@@ -166,60 +147,79 @@ exports.editExpense = async (req, res) => {
         const oldAmount = parseFloat(expense.amount);
         const newAmount = amount ? parseFloat(amount) : oldAmount;
 
-        // 2. STRICT SECURITY: Block amount changes for online payments
         if (expense.is_online_payment && newAmount !== oldAmount) {
             await connection.rollback();
-            return res.status(403).json({ error: "Security Restriction: You cannot edit the amount of a verified online transaction." });
+            return res.status(403).json({ error: "Cannot edit amount of a verified online transaction." });
         }
 
-        // 3. Update Database Record
-        await connection.query(`
-            UPDATE expenses SET title = ?, description = ?, project_id = ?, amount = ? 
-            WHERE expense_id = ?
-        `, [title, description, validNewProjectId, newAmount, expense_id]);
+        await connection.query(`UPDATE expenses SET title = ?, description = ?, project_id = ?, amount = ? WHERE expense_id = ?`, [title, description, validNewProjectId, newAmount, expense_id]);
 
-        // 4. Perfect Math Correction (Only if the expense was already counted as paid)
         if (expense.payment_status === 'paid' || expense.payment_status === 'success') {
-            // First, completely reverse the old transaction math...
             await connection.query(`UPDATE organizations SET total_expenses = total_expenses - ?, remaining_balance = remaining_balance + ? WHERE organization_id = ?`, [oldAmount, oldAmount, expense.organization_id]);
-            if (oldProjectId) {
-                await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses - ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [oldAmount, oldAmount, oldProjectId]);
-            }
+            if (oldProjectId) await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses - ?, remaining_balance = remaining_balance + ? WHERE project_id = ?`, [oldAmount, oldAmount, oldProjectId]);
 
-            // ...Then, apply the new transaction math.
             await connection.query(`UPDATE organizations SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE organization_id = ?`, [newAmount, newAmount, expense.organization_id]);
-            if (validNewProjectId) {
-                await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [newAmount, newAmount, validNewProjectId]);
-            }
+            if (validNewProjectId) await connection.query(`UPDATE organization_projects SET total_expenses = total_expenses + ?, remaining_balance = remaining_balance - ? WHERE project_id = ?`, [newAmount, newAmount, validNewProjectId]);
         }
 
-        // 5. Add new AWS S3 Proof Documents (if any uploaded during edit)
+        // ==========================================
+        // 5. REPLACE DOCUMENT & ARCHIVE OLD ANOMALIES (History Preservation)
+        // ==========================================
+        let uploadedPrimaryFile = null;
+        
         if (req.files && req.files.length > 0) {
+            uploadedPrimaryFile = req.files[0]; 
+            
+            // A. ARCHIVE OLD ALERTS (Do NOT delete): 
+            // Mark older anomalies as verified/sent. They remain in the database for historical 
+            // records but will no longer trigger dashboard alerts or cron job push notifications.
+            await connection.query(
+                `UPDATE anomaly_detections 
+                 SET verification_status = 'verified', alert_message_status = 'sent' 
+                 WHERE expense_id = ? AND verification_status = 'pending'`, 
+                [expense_id]
+            );
+
+            // B. RESET EXPENSE STATUS: Put the expense back into 'pending' mode for the AI
+            await connection.query(
+                `UPDATE expenses SET status = 'pending' WHERE expense_id = ?`, 
+                [expense_id]
+            );
+
+            // C. CLEAN OLD DOCUMENTS: Remove the old rejected receipt so the gallery only shows the new one
+            await connection.query(
+                `DELETE FROM expense_documents WHERE expense_id = ?`, 
+                [expense_id]
+            );
+
+            // D. INSERT NEW DOCUMENT PROOF
             const documentQueries = req.files.map(file => {
                 return connection.query(`INSERT INTO expense_documents (expense_id, file_url, file_name, file_type) VALUES (?, ?, ?, ?)`, 
                 [expense_id, file.location, file.originalname, file.mimetype]);
             });
             await Promise.all(documentQueries);
-
-            // --- NEW: QUEUE BROADCAST FOR PROOF DOCUMENTS ---
-            const [orgInfo] = await connection.query(`SELECT slug FROM organizations WHERE organization_id = ?`, [expense.organization_id]);
-            if (orgInfo.length > 0) {
-                const orgSlug = orgInfo[0].slug;
-                const pushTitle = "New Document Added";
-                const pushBody = `New proof attached to expense: ${title || 'Updated Transaction'}`;
-                const pushUrl = validNewProjectId ? `/project?org=${orgSlug}` : `/org?org=${orgSlug}`;
-
-                await connection.query(
-                    `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
-                     VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
-                    [expense.organization_id, pushTitle, pushBody, pushUrl]
-                );
-            }
-            // ------------------------------------------------
         }
 
         await connection.commit();
-        res.status(200).json({ success: true, message: "Expense updated successfully." });
+        res.status(200).json({ success: true, message: "Expense updated." });
+
+        // ==========================================
+        // 6. ASYNC AI VERIFICATION PIPELINE (Runs on the NEW document)
+        // ==========================================
+        if (uploadedPrimaryFile) {
+            setImmediate(() => {
+                verificationService.runDocumentVerification({
+                    expenseId: expense_id, 
+                    organizationId: expense.organization_id, 
+                    projectId: validNewProjectId || oldProjectId,
+                    primaryFile: uploadedPrimaryFile, 
+                    claimedAmount: newAmount, 
+                    title: title, 
+                    description: description,
+                    createdBy: req.user ? req.user.user_id : 1 
+                });
+            });
+        }
     } catch (error) {
         if (connection) await connection.rollback();
         console.error("Edit Expense Error:", error);

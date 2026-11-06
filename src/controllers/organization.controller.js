@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+router.get('/:orgId/anomalies', organizationController.getPendingAnomalies);
 
 // Fetch specific organization data for the home page
 exports.getOrganizationHomeData = async (req, res) => {
@@ -60,5 +61,25 @@ exports.updateOrganization = async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, error: "Server Error" });
+    }
+};
+
+
+// Fetch pending AI anomalies for the internal web dashboard
+exports.getPendingAnomalies = async (req, res) => {
+    try {
+        const { orgId } = req.params;
+        const [anomalies] = await pool.query(`
+            SELECT ad.*, e.title as expense_title, e.amount as expense_amount 
+            FROM anomaly_detections ad
+            LEFT JOIN expenses e ON ad.expense_id = e.expense_id
+            WHERE ad.organization_id = ? AND ad.alert_message_status = 'pending'
+            ORDER BY ad.created_at DESC
+        `, [orgId]);
+        
+        res.status(200).json({ success: true, data: anomalies });
+    } catch (error) {
+        console.error("Fetch Anomalies Error:", error);
+        res.status(500).json({ success: false, error: "Failed to fetch anomalies" });
     }
 };

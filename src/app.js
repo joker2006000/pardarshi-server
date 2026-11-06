@@ -12,7 +12,8 @@ const paymentRoutes = require('./routes/payment.routes');
 const formRoutes = require('./routes/form.routes');
 const transactionRoutes = require('./routes/transaction.routes');
 const publicRoutes = require('./routes/public.routes'); 
-const pushRoutes = require('./routes/push.routes'); // <-- Import here
+const pushRoutes = require('./routes/push.routes'); 
+const prototypeRoutes = require('./routes/prototype.routes'); 
 
 const app = express();
 
@@ -46,6 +47,8 @@ app.use('/api/project', projectRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/forms', formRoutes);
 app.use('/api/transactions', transactionRoutes);
+
+app.use('/api/prototype', prototypeRoutes);
 
 // Configure Rate Limiter for public endpoints
 const publicLimiter = rateLimit({
