@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-router.get('/:orgId/anomalies', organizationController.getPendingAnomalies);
 
 // Fetch specific organization data for the home page
 exports.getOrganizationHomeData = async (req, res) => {
