@@ -1,10 +1,12 @@
 const { GoogleGenAI } = require("@google/genai");
 
-const ai = new GoogleGenAI({});
+// Set apiVersion to "v1beta" to enable multimodal support for both images and documents
+const ai = new GoogleGenAI({
+    httpOptions: { apiVersion: "v1beta" }
+});
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
     
-    // Prompt focused entirely on text extraction and web verification
     const prompt = `
     You are a strict financial auditor for the PARDARSHI transparency platform.
     Analyze this receipt. Use your Google Search tool to verify the vendor name and the address printed on the receipt.
@@ -27,13 +29,16 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
         required: ["vendor_name", "maps_vendor_found", "maps_address_match", "receipt_date", "total_amount", "tax_amount", "line_items", "context_match", "anomaly_reason"]
     };
 
+    // Dynamically switch the input type based on the uploaded file format
+    const mediaType = mimeType === 'application/pdf' ? 'document' : 'image';
+
     try {
         const interaction = await ai.interactions.create({
             model: "gemini-3.8-flash",
             input: [
                 { type: "text", text: prompt },
                 { 
-                    type: "image", 
+                    type: mediaType, 
                     data: imageBuffer.toString("base64"), 
                     mime_type: mimeType 
                 }
