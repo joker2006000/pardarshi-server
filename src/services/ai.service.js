@@ -1,5 +1,5 @@
 const { GoogleGenAI } = require("@google/genai");
-const google = require('googlethis'); 
+const axios = require('axios'); // 100% Free OpenStreetMap client
 
 const ai = new GoogleGenAI({
     httpOptions: { apiVersion: "v1beta" }
@@ -35,7 +35,7 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
     const mediaType = mimeType === 'application/pdf' ? 'document' : 'image';
 
     try {
-        // 1. Let AI extract the highly detailed address (Free)
+        // 1. Let AI read the receipt and extract structured components (100% Free)
         const interaction = await ai.interactions.create({
             model: "gemini-3.5-flash-lite", 
             input: [
@@ -47,58 +47,49 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
 
         const aiResult = JSON.parse(interaction.output_text);
 
-        // 2. SMARTER MANUAL SEARCH LOGIC
+        // 2. 100% FREE OPENSTREETMAP (NOMINATIM) VERIFICATION
         let maps_vendor_found = false;
         let maps_address_match = false;
 
         if (aiResult.vendor_name && aiResult.vendor_name.toLowerCase() !== "unknown") {
-            // Build a highly targeted query using only the pieces the AI found
             const addressParts = [
                 aiResult.vendor_name,
-                aiResult.vendor_street,
                 aiResult.vendor_city,
-                aiResult.vendor_district,
-                aiResult.vendor_state,
                 aiResult.vendor_pincode
-            ].filter(part => part && part.trim() !== ""); // Remove empty parts
+            ].filter(part => part && part.trim() !== "");
 
-            const searchQuery = addressParts.join(" ");
+            const searchString = addressParts.join(" ");
             
-            // Scrape Google
-            const searchResults = await google.search(searchQuery, {
-                page: 0, 
-                safe: false, 
-                parse_ads: false, 
-                additional_params: { hl: 'en' }
-            });
-
-            // CHECK 1: Does Google trigger a Knowledge Panel (Maps Sidebar)?
-            if (searchResults.knowledge_panel && searchResults.knowledge_panel.title) {
-                maps_vendor_found = true;
+            try {
+                const osmUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchString)}&format=json&addressdetails=1&limit=1`;
                 
-                // CHECK 2: Validate the address using the detailed components
-                const scrapedAddress = (searchResults.knowledge_panel.description || searchResults.knowledge_panel.type || "").toLowerCase();
-                
-                // If the scraped Maps data contains the City, District, or Pincode, we consider it a verified match
-                const cityMatch = aiResult.vendor_city && scrapedAddress.includes(aiResult.vendor_city.toLowerCase());
-                const districtMatch = aiResult.vendor_district && scrapedAddress.includes(aiResult.vendor_district.toLowerCase());
-                const pincodeMatch = aiResult.vendor_pincode && scrapedAddress.includes(aiResult.vendor_pincode);
+                const osmResponse = await axios.get(osmUrl, {
+                    headers: {
+                        'User-Agent': 'Pardarshi-App/1.0 (student-project@pardarshi.local)'
+                    }
+                });
 
-                if (cityMatch || districtMatch || pincodeMatch) {
-                    maps_address_match = true;
-                }
-            } 
-            // Fallback: If no panel, check if any of the top search results are actual Google Maps links for this business
-            else {
-                const hasMapsLink = searchResults.results.some(result => 
-                    (result.url.includes("google.com/maps") || result.url.includes("maps.app.goo.gl")) && 
-                    result.title.toLowerCase().includes(aiResult.vendor_name.toLowerCase())
-                );
+                const candidates = osmResponse.data;
 
-                if (hasMapsLink) {
-                    maps_vendor_found = true;
-                    maps_address_match = true;
+                if (candidates && candidates.length > 0) {
+                    const place = candidates[0];
+                    maps_vendor_found = true; 
+                    
+                    const addressData = place.address || {};
+                    const scrapedPincode = addressData.postcode || "";
+                    const scrapedCity = (addressData.city || addressData.town || addressData.county || "").toLowerCase();
+                    
+                    const expectedPincode = aiResult.vendor_pincode || "";
+                    const expectedCity = (aiResult.vendor_city || "").toLowerCase();
+
+                    // Smart check focusing on reliable Pincode and City matches
+                    if ((expectedPincode && scrapedPincode === expectedPincode) || 
+                        (expectedCity && scrapedCity.includes(expectedCity))) {
+                        maps_address_match = true;
+                    }
                 }
+            } catch (osmError) {
+                console.warn("OpenStreetMap Search warning:", osmError.message);
             }
         }
 
