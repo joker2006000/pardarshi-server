@@ -85,6 +85,7 @@ exports.createReport = async (req, res) => {
 // 2. SEND A MESSAGE (Both Org Admins & Contributors)
 // ==========================================
 exports.sendMessage = async (req, res) => {
+    const connection = await db.getConnection();
     try {
         const { report_id } = req.params;
         const { message_text } = req.body;
@@ -93,7 +94,12 @@ exports.sendMessage = async (req, res) => {
         // Admins have user IDs; guests do not.
         const senderId = role === 'organization' ? (req.user.userId || req.user.id) : null;
 
-        const connection = await db.getConnection();
+        // Validation check
+        if (!message_text && (!req.files || req.files.length === 0)) {
+            connection.release();
+            return res.status(400).json({ success: false, message: "Message or attachment is required." });
+        }
+
         try {
             await connection.beginTransaction();
 
@@ -107,6 +113,7 @@ exports.sendMessage = async (req, res) => {
             const messageId = msgResult.insertId;
 
             // 2. Handle File Attachments (if Multer S3 middleware was used)
+            let formattedAttachments = [];
             if (req.files && req.files.length > 0) {
                 const attachmentValues = req.files.map(file => [
                     messageId, 
@@ -119,16 +126,22 @@ exports.sendMessage = async (req, res) => {
                     `INSERT INTO report_attachments (message_id, file_url, file_name, file_type) VALUES ?`,
                     [attachmentValues]
                 );
+
+                formattedAttachments = req.files.map(f => ({
+                    url: f.location,
+                    name: f.originalname,
+                    type: f.mimetype.startsWith('image/') ? 'image' : 'document'
+                }));
             }
 
-          // 3. Update the main report status to reflect new activity
+            // 3. Update the main report status to reflect new activity
             const newStatus = role === 'organization' ? 'in_progress' : 'open';
             await connection.query(
                 `UPDATE reports SET status = ?, updated_at = NOW() WHERE report_id = ?`, 
                 [newStatus, report_id]
             );
 
-            // --- NEW: QUEUE THE NATIVE NOTIFICATION ---
+            // 4. Queue the native notification
             const [reportInfo] = await connection.query(
                 `SELECT r.organization_id, r.access_token, r.subject, o.slug 
                  FROM reports r 
@@ -140,8 +153,6 @@ exports.sendMessage = async (req, res) => {
             if (reportInfo.length > 0) {
                 const { organization_id, access_token, subject, slug } = reportInfo[0];
                 
-                // If org sends message -> target the specific contributor's token
-                // If contributor sends message -> target NULL (which we will map to admins)
                 const pushGuestToken = role === 'organization' ? access_token : null;
                 const pushTitle = role === 'organization' ? `Reply: ${subject}` : `New Message: ${subject}`;
                 const pushBody = message_text ? (message_text.substring(0, 45) + '...') : 'New document attached.';
@@ -153,32 +164,33 @@ exports.sendMessage = async (req, res) => {
                     [organization_id, pushGuestToken, pushTitle, pushBody, pushUrl]
                 );
             }
-            // ------------------------------------------
+
             await connection.commit();
 
-            // NOTE: In Phase 1 (WebSockets), you will emit the event here!
-            // Inside report.controller.js -> sendMessage function:
+            // 5. Emit the live event via WebSockets instantly
+            if (req.io) {
+                req.io.to(`report_${report_id}`).emit('new_message', { 
+                    message_id: messageId, 
+                    sender: role, 
+                    text: message_text || "",
+                    attachments: formattedAttachments 
+                });
+            }
 
-// Emit the live event to the specific report room instantly
-req.io.to(`report_${report_id}`).emit('new_message', { 
-    message_id: messageId, 
-    sender: role, 
-    text: message_text,
-    attachments: req.files ? req.files.map(f => ({ url: f.location, type: f.mimetype.startsWith('image/') ? 'image' : 'document' })) : []
-});
+            // 💥 FIX: Send ONE single response and terminate execution with 'return'
+            return res.status(201).json({ success: true, message: "Message sent.", message_id: messageId });
 
-res.status(201).json({ success: true, message: "Message sent.", message_id: messageId });
-
-            res.status(201).json({ success: true, message: "Message sent.", message_id: messageId });
         } catch (dbError) {
             await connection.rollback();
             throw dbError;
         } finally {
-            connection.release();
+            if (connection) connection.release();
         }
     } catch (error) {
         console.error("Send Message Error:", error);
-        res.status(500).json({ success: false, message: "Failed to send message." });
+        if (!res.headersSent) {
+            return res.status(500).json({ success: false, message: "Failed to send message." });
+        }
     }
 };
 
