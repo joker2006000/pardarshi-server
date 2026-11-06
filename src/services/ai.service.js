@@ -34,7 +34,7 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
 
     try {
         const interaction = await ai.interactions.create({
-            model: "gemini-1.5-flash", // Switch this to 1.5-flash for 1,500 daily requests
+            model: "gemini-2.5-flash-lite", // Switch this to 1.5-flash for 1,500 daily requests
             input: [
                 { type: "text", text: prompt },
                 { type: mediaType, data: imageBuffer.toString("base64"), mime_type: mimeType }
