@@ -3,18 +3,22 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
+    // 1. Keep googleSearch, but REMOVE generationConfig to avoid API conflicts
     const model = genAI.getGenerativeModel({ 
-    model: "gemini-3.5-flash", // ✅ Updated active model string
-    tools: [{ googleSearch: {} }], 
-    generationConfig: { responseMimeType: "application/json" }
-});
+        model: "gemini-1.5-flash",
+        tools: [{ googleSearch: {} }] 
+    });
 
+    // 2. Instruct the AI to output raw JSON format explicitly
     const prompt = `
     You are a strict financial auditor for the PARDARSHI transparency platform.
-    Analyze this receipt and return a JSON object with EXACTLY these keys:
+    Analyze this receipt. Use your Google Search tool to verify the vendor name and address.
+    
+    You MUST return ONLY a raw JSON object. Do not include markdown formatting like \`\`\`json. 
+    Return EXACTLY these keys:
     - "vendor_name": (string) The name of the business.
-    - "maps_vendor_found": (boolean) Use your Google Search tool to search Google Maps for this vendor name and city. Return true ONLY if a physical shop or registered business exists on Google Maps.
-    - "maps_address_match": (boolean) Return true if the address printed on the receipt matches the location data found on Google Maps.
+    - "maps_vendor_found": (boolean) True ONLY if a physical shop or registered business exists on Google Maps/Search.
+    - "maps_address_match": (boolean) True if the address printed on the receipt matches the location data found on Google.
     - "receipt_date": (string) YYYY-MM-DD format.
     - "total_amount": (number) The final billed amount.
     - "tax_amount": (number) Total taxes, 0 if none.
@@ -29,7 +33,12 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
 
     try {
         const result = await model.generateContent([prompt, imagePart]);
-        return JSON.parse(result.response.text());
+        let responseText = result.response.text();
+        
+        // 3. Clean up the response just in case the AI wraps it in markdown blocks
+        responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        return JSON.parse(responseText);
     } catch (error) {
         console.error("Gemini API Error:", error);
         throw new Error("AI Processing Failed");
