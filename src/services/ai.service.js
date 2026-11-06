@@ -6,7 +6,7 @@ const ai = new GoogleGenAI({
 });
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
-    
+
     const prompt = `
     You are a strict financial auditor for the PARDARSHI transparency platform.
     Analyze this receipt. Use your Google Search tool to verify the vendor name and the address printed on the receipt.
@@ -34,21 +34,13 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
 
     try {
         const interaction = await ai.interactions.create({
-            model: "gemini-3.8-flash",
+            model: "gemini-1.5-flash", // Switch this to 1.5-flash for 1,500 daily requests
             input: [
                 { type: "text", text: prompt },
-                { 
-                    type: mediaType, 
-                    data: imageBuffer.toString("base64"), 
-                    mime_type: mimeType 
-                }
+                { type: mediaType, data: imageBuffer.toString("base64"), mime_type: mimeType }
             ],
             tools: [{ type: "google_search" }],
-            response_format: {
-                type: "text",
-                mime_type: "application/json",
-                schema: receiptJsonSchema
-            }
+            response_format: { type: "text", mime_type: "application/json", schema: receiptJsonSchema }
         });
 
         return JSON.parse(interaction.output_text);

@@ -16,34 +16,47 @@ const anomalyTranslations = {
 cron.schedule('*/5 * * * * *', async () => {
     const connection = await db.getConnection();
     try {
-        const [anomalies] = await connection.query(`
+        const [groupedAnomalies] = await connection.query(`
             SELECT 
-                ad.anomaly_id, ad.anomaly_text, ad.organization_id, ad.project_id,
+                ad.expense_id, ad.organization_id, ad.project_id,
                 o.name AS organization_name, o.slug AS org_slug,
                 COALESCE(op.name, 'General Account') AS project_name,
-                e.title AS expense_title, e.amount AS expense_amount
+                e.title AS expense_title, e.amount AS expense_amount,
+                GROUP_CONCAT(ad.anomaly_id) AS anomaly_ids,
+                GROUP_CONCAT(ad.anomaly_text) AS anomaly_texts
             FROM anomaly_detections ad
             JOIN organizations o ON ad.organization_id = o.organization_id
             LEFT JOIN organization_projects op ON ad.project_id = op.project_id
             JOIN expenses e ON ad.expense_id = e.expense_id
             WHERE ad.alert_message_status = 'pending' 
             AND ad.created_at <= NOW() - INTERVAL 15 SECOND
+            GROUP BY ad.expense_id, ad.organization_id, ad.project_id, o.name, o.slug, op.name, e.title, e.amount
         `);
 
-        for (const anomaly of anomalies) {
-            const marathiReason = anomalyTranslations[anomaly.anomaly_text] || "अज्ञात त्रुटी.";
+        for (const alertGroup of groupedAnomalies) {
+            const anomalyTypes = [...new Set(alertGroup.anomaly_texts.split(','))]; 
+            const anomalyIds = alertGroup.anomaly_ids.split(',');
+            
+            // Format into a numbered list separated by newlines
+            const marathiReasons = anomalyTypes
+                .map((type, index) => `${index + 1}. ${anomalyTranslations[type] || "अज्ञात त्रुटी."}`)
+                .join("\n");
             
             const pushTitle = "⚠️ दखल घ्या (Alert)";
-            const pushBody = `${anomaly.organization_name} च्या '${anomaly.project_name}' मधील ₹${anomaly.expense_amount} च्या '${anomaly.expense_title}' खर्चामध्ये त्रुटी आढळली आहे. कारण: ${marathiReason}`;
-            const pushUrl = anomaly.project_id ? `/project?org=${anomaly.org_slug}` : `/org?org=${anomaly.org_slug}`;
+            // Add a newline before the list starts
+            const pushBody = `${alertGroup.organization_name} च्या '${alertGroup.project_name}' मधील ₹${alertGroup.expense_amount} च्या '${alertGroup.expense_title}' खर्चामध्ये खालील त्रुटी आढळल्या आहेत:\n${marathiReasons}`;
+            const pushUrl = alertGroup.project_id ? `/project?org=${alertGroup.org_slug}` : `/org?org=${alertGroup.org_slug}`;
 
             await connection.query(
                 `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
                  VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
-                [anomaly.organization_id, pushTitle, pushBody, pushUrl]
+                [alertGroup.organization_id, pushTitle, pushBody, pushUrl]
             );
 
-            await connection.query(`UPDATE anomaly_detections SET alert_message_status = 'sent' WHERE anomaly_id = ?`, [anomaly.anomaly_id]);
+            await connection.query(
+                `UPDATE anomaly_detections SET alert_message_status = 'sent' WHERE anomaly_id IN (?)`, 
+                [anomalyIds]
+            );
         }
     } catch (error) {
         console.error("Alert Cron Job Error:", error);
