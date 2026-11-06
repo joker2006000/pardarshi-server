@@ -17,6 +17,8 @@ const prototypeRoutes = require('./routes/prototype.routes');
 
 const app = express();
 
+app.set('trust proxy', 1); // Trust the first proxy in front of the app
+
 // ==========================================
 // SOCKET.IO BRIDGE MIDDLEWARE
 // ==========================================
