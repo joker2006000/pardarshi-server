@@ -4,10 +4,10 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
     const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        tools: [{ googleSearch: {} }], 
-        generationConfig: { responseMimeType: "application/json" }
-    });
+    model: "gemini-3.5-flash", // ✅ Updated active model string
+    tools: [{ googleSearch: {} }], 
+    generationConfig: { responseMimeType: "application/json" }
+});
 
     const prompt = `
     You are a strict financial auditor for the PARDARSHI transparency platform.
