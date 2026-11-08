@@ -1,7 +1,7 @@
 const db = require('../config/db');
 
 // ==========================================
-// 1. GET PUBLIC ORGANIZATION PAGE
+// 1. GET PUBLIC ORGANIZATION PAGE (Updated with Announcements)
 // ==========================================
 exports.getPublicOrganization = async (req, res) => {
     try {
@@ -23,7 +23,7 @@ exports.getPublicOrganization = async (req, res) => {
 
         const org = orgRows[0];
 
-        // Fetch Organization Members (Name, Pic, Role)
+        // Fetch Organization Members
         const [members] = await db.query(
             `SELECT u.name, u.profile_pic_url, om.role 
              FROM organization_members om
@@ -49,12 +49,26 @@ exports.getPublicOrganization = async (req, res) => {
             [org.organization_id]
         );
 
+        // NEW: Fetch Public Announcements
+        const [announcements] = await db.query(
+            `SELECT a.announcement_id, a.text_information, a.created_at,
+                    p.slug AS project_slug, p.name AS project_name,
+                    e.expense_id, e.title AS expense_title, e.amount AS expense_amount
+             FROM announcements a
+             LEFT JOIN organization_projects p ON a.project_id = p.project_id
+             LEFT JOIN expenses e ON a.expense_id = e.expense_id
+             WHERE a.organization_id = ? AND a.status = 'show'
+             ORDER BY a.created_at DESC`,
+            [org.organization_id]
+        );
+
         res.status(200).json({
             success: true,
             data: {
                 organization: org,
                 members: members,
-                projects: projects
+                projects: projects,
+                announcements: announcements // Added to the public payload
             }
         });
     } catch (error) {
@@ -98,7 +112,7 @@ exports.getPublicProjectTransactions = async (req, res) => {
             [projectId]
         );
 
-        // 3. Fetch Expenses (Includes Creator Details & Proof Documents)
+       // 3. Fetch Expenses (Includes Creator Details & Proof Documents)
         const [expenses] = await db.query(
             `SELECT e.expense_id, e.title, e.description, e.amount, e.expense_date, 
                     e.category, e.payment_mode, e.status, e.created_at, e.updated_at,
@@ -109,7 +123,7 @@ exports.getPublicProjectTransactions = async (req, res) => {
                      WHERE d.expense_id = e.expense_id) AS proofs
              FROM expenses e
              LEFT JOIN users u ON e.created_by = u.user_id
-             WHERE e.project_id = ? AND e.status IN ('approved', 'paid')
+             WHERE e.project_id = ? AND e.status != 'rejected' 
              ORDER BY e.expense_date DESC, e.created_at DESC`,
             [projectId]
         );
