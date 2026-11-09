@@ -57,7 +57,7 @@ cron.schedule('*/5 * * * * *', async () => {
                         : alertGroup.proof_details_json;      
                     if (parsedDetails && parsedDetails.marathi_analysis) {
                         // Format with spacing so it sits cleanly above the numbered list
-                        aiDetailedFeedback = `🤖 Pardarshi Analysis:\n${parsedDetails.marathi_analysis}\n\nतांत्रिक त्रुटी (System Flags):\n`;
+                        aiDetailedFeedback = `${parsedDetails.marathi_analysis}\nतांत्रिक त्रुटी (System Flags):\n`;
                     }
                 } catch (jsonErr) {
                     console.error("Failed to parse proof_details JSON for push notification:", jsonErr);
@@ -66,7 +66,7 @@ cron.schedule('*/5 * * * * *', async () => {
             
             const pushTitle = "⚠️ दखल घ्या (Alert)"; //[cite: 3]
             // RESTRUCTURED BODY: Intro -> AI Analysis -> Hardcoded Numbered List
-            const pushBody = `${alertGroup.organization_name} च्या '${alertGroup.project_name}' मधील ₹${alertGroup.expense_amount} च्या '${alertGroup.expense_title}' खर्चाच्या पावतीत त्रुटी आढळल्या आहेत:\n\n${aiDetailedFeedback}${marathiReasons}`;
+            const pushBody = `${alertGroup.organization_name} च्या '${alertGroup.project_name}' मधील '${alertGroup.expense_title}'च्या खर्चाच्या पावतीत त्रुटी आढळल्या आहेत:\n${aiDetailedFeedback}${marathiReasons}`;
             
             const pushUrl = alertGroup.project_id ? `/project?org=${alertGroup.org_slug}` : `/org?org=${alertGroup.org_slug}`; //[cite: 3]
 
