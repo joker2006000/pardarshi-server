@@ -13,6 +13,9 @@ const anomalyTranslations = {
     'VENDOR_ADDRESS_MISMATCH': "पावतीवरील दुकानाचा पत्ता आणि गुगल मॅप्स (Google Maps) वरील अधिकृत पत्ता जुळत नाही."
 };
 
+     // UPDATED QUERY: Added MAX(ad.proof_details) to fetch the AI JSON data stored during verification
+     // ... (keep the imports and anomalyTranslations exactly the same)[cite: 3]
+
 cron.schedule('*/5 * * * * *', async () => {
     const connection = await db.getConnection();
     try {
@@ -23,7 +26,8 @@ cron.schedule('*/5 * * * * *', async () => {
                 COALESCE(op.name, 'General Account') AS project_name,
                 e.title AS expense_title, e.amount AS expense_amount,
                 GROUP_CONCAT(ad.anomaly_id) AS anomaly_ids,
-                GROUP_CONCAT(ad.anomaly_text) AS anomaly_texts
+                GROUP_CONCAT(ad.anomaly_text) AS anomaly_texts,
+                MAX(ad.proof_details) AS proof_details_json
             FROM anomaly_detections ad
             JOIN organizations o ON ad.organization_id = o.organization_id
             LEFT JOIN organization_projects op ON ad.project_id = op.project_id
@@ -31,36 +35,52 @@ cron.schedule('*/5 * * * * *', async () => {
             WHERE ad.alert_message_status = 'pending' 
             AND ad.created_at <= NOW() - INTERVAL 15 SECOND
             GROUP BY ad.expense_id, ad.organization_id, ad.project_id, o.name, o.slug, op.name, e.title, e.amount
-        `);
+        `); //[cite: 3]
 
         for (const alertGroup of groupedAnomalies) {
             const anomalyTypes = [...new Set(alertGroup.anomaly_texts.split(','))]; 
-            const anomalyIds = alertGroup.anomaly_ids.split(',');
+            const anomalyIds = alertGroup.anomaly_ids.split(','); //[cite: 3]
             
-            // Format into a numbered list separated by newlines
+            // Format the system-generated hardcoded reasons
             const marathiReasons = anomalyTypes
                 .map((type, index) => `${index + 1}. ${anomalyTranslations[type] || "अज्ञात त्रुटी."}`)
-                .join("\n");
+                .join("\n"); //[cite: 3]
+                
+            // Extract the AI's detailed Marathi analysis
+            let aiDetailedFeedback = "";
+            if (alertGroup.proof_details_json) {
+                try {
+                    const parsedDetails = JSON.parse(alertGroup.proof_details_json);
+                    if (parsedDetails.marathi_analysis) {
+                        // Format with spacing so it sits cleanly above the numbered list
+                        aiDetailedFeedback = `🤖 AI विश्लेषण:\n${parsedDetails.marathi_analysis}\n\nतांत्रिक त्रुटी (System Flags):\n`;
+                    }
+                } catch (jsonErr) {
+                    console.error("Failed to parse proof_details JSON for push notification:", jsonErr);
+                }
+            }
             
-            const pushTitle = "⚠️ दखल घ्या (Alert)";
-            // Add a newline before the list starts
-            const pushBody = `${alertGroup.organization_name} च्या '${alertGroup.project_name}' मधील ₹${alertGroup.expense_amount} च्या '${alertGroup.expense_title}' खर्चामध्ये खालील त्रुटी आढळल्या आहेत:\n${marathiReasons}`;
-            const pushUrl = alertGroup.project_id ? `/project?org=${alertGroup.org_slug}` : `/org?org=${alertGroup.org_slug}`;
+            const pushTitle = "⚠️ दखल घ्या (Alert)"; //[cite: 3]
+            // RESTRUCTURED BODY: Intro -> AI Analysis -> Hardcoded Numbered List
+            const pushBody = `${alertGroup.organization_name} च्या '${alertGroup.project_name}' मधील ₹${alertGroup.expense_amount} च्या '${alertGroup.expense_title}' खर्चाच्या पावतीत त्रुटी आढळल्या आहेत:\n\n${aiDetailedFeedback}${marathiReasons}`;
+            
+            const pushUrl = alertGroup.project_id ? `/project?org=${alertGroup.org_slug}` : `/org?org=${alertGroup.org_slug}`; //[cite: 3]
 
             await connection.query(
                 `INSERT INTO notification_queue (organization_id, guest_token, title, body, url, status) 
                  VALUES (?, 'BROADCAST', ?, ?, ?, 'pending')`,
                 [alertGroup.organization_id, pushTitle, pushBody, pushUrl]
-            );
+            ); //[cite: 3]
 
             await connection.query(
                 `UPDATE anomaly_detections SET alert_message_status = 'sent' WHERE anomaly_id IN (?)`, 
                 [anomalyIds]
-            );
+            ); //[cite: 3]
         }
     } catch (error) {
-        console.error("Alert Cron Job Error:", error);
+        console.error("Alert Cron Job Error:", error); //[cite: 3]
     } finally {
-        connection.release();
+        connection.release(); //[cite: 3]
     }
+
 });

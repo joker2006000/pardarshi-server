@@ -7,12 +7,16 @@ const ai = new GoogleGenAI({
 
 exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDescription) => {
 
+    // UPDATED PROMPT: Instructs the AI to provide a comprehensive analysis in Marathi 
+    // and evaluate all possible anomalies against the expense title and description.
     const prompt = `
     You are a strict financial auditor for PARDARSHI.
     Analyze this receipt. Extract the vendor's name and break down their exact printed address into specific components (street/road, city/town/taluka, district, state, pincode). If a detail is missing, leave it empty.
     Evaluate if the physical items logically align with the project expense title: "${expectedTitle}" and description: "${expectedDescription}".
+    CRITICAL REQUIREMENT: You must provide a detailed analysis ('marathi_analysis') EXCLUSIVELY IN MARATHI. This Marathi text should thoroughly explain whether the receipt perfectly matches the expense, OR detail all the reasons and anomalies if the document is suspicious, invalid, or mismatched.
     `;
 
+    // UPDATED SCHEMA: Added 'marathi_analysis' and 'anomaly_flags' while keeping all existing fields intact.
     const receiptJsonSchema = {
         type: "object",
         properties: {
@@ -27,9 +31,17 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
             tax_amount: { type: "number" },
             line_items: { type: "array", items: { type: "string" } },
             context_match: { type: "boolean" },
-            anomaly_reason: { type: "string" }
+            anomaly_reason: { type: "string", description: "Short English reason if any anomaly is found" },
+            
+            // NEW FEATURES: Marathi detailed feedback and comprehensive anomaly tracking
+            marathi_analysis: { type: "string", description: "Detailed comprehensive analysis and feedback in Marathi about the document's validity and any anomalies." },
+            anomaly_flags: { type: "array", items: { type: "string" }, description: "List of all possible anomaly reasons detected by the AI." }
         },
-        required: ["vendor_name", "vendor_street", "vendor_city", "vendor_district", "vendor_state", "vendor_pincode", "receipt_date", "total_amount", "tax_amount", "line_items", "context_match", "anomaly_reason"]
+        required: [
+            "vendor_name", "vendor_street", "vendor_city", "vendor_district", "vendor_state", 
+            "vendor_pincode", "receipt_date", "total_amount", "tax_amount", "line_items", 
+            "context_match", "anomaly_reason", "marathi_analysis", "anomaly_flags"
+        ]
     };
 
     const mediaType = mimeType === 'application/pdf' ? 'document' : 'image';

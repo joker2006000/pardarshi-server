@@ -72,9 +72,9 @@ exports.getPendingAnomalies = async (req, res) => {
             SELECT ad.*, e.title as expense_title, e.amount as expense_amount 
             FROM anomaly_detections ad
             LEFT JOIN expenses e ON ad.expense_id = e.expense_id
-            WHERE ad.organization_id = ? AND ad.alert_message_status = 'pending'
+            WHERE ad.organization_id = ? AND ad.status = 'pending'
             ORDER BY ad.created_at DESC
-        `, [orgId]);
+        `, [orgId]);  // imp --------------------------------------------------  ad.alert_message_status is problem for anomaly detection, it should be 'pending' to fetch only pending anomalies
         
         res.status(200).json({ success: true, data: anomalies });
     } catch (error) {
