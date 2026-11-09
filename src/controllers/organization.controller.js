@@ -63,7 +63,6 @@ exports.updateOrganization = async (req, res) => {
     }
 };
 
-
 // Fetch pending AI anomalies for the internal web dashboard
 exports.getPendingAnomalies = async (req, res) => {
     try {
@@ -72,9 +71,9 @@ exports.getPendingAnomalies = async (req, res) => {
             SELECT ad.*, e.title as expense_title, e.amount as expense_amount 
             FROM anomaly_detections ad
             LEFT JOIN expenses e ON ad.expense_id = e.expense_id
-            WHERE ad.organization_id = ? AND ad.status = 'pending'
+            WHERE ad.organization_id = ? AND ad.verification_status = 'pending'
             ORDER BY ad.created_at DESC
-        `, [orgId]);  // imp --------------------------------------------------  ad.alert_message_status is problem for anomaly detection, it should be 'pending' to fetch only pending anomalies
+        `, [orgId]); 
         
         res.status(200).json({ success: true, data: anomalies });
     } catch (error) {

@@ -47,11 +47,15 @@ cron.schedule('*/5 * * * * *', async () => {
                 .join("\n"); //[cite: 3]
                 
             // Extract the AI's detailed Marathi analysis
+          // Extract the AI's detailed Marathi analysis
             let aiDetailedFeedback = "";
             if (alertGroup.proof_details_json) {
                 try {
-                    const parsedDetails = JSON.parse(alertGroup.proof_details_json);
-                    if (parsedDetails.marathi_analysis) {
+                    // FIX: Check if it's already an object (auto-parsed by mysql2) or a string
+                    const parsedDetails = typeof alertGroup.proof_details_json === 'string' 
+                        ? JSON.parse(alertGroup.proof_details_json) 
+                        : alertGroup.proof_details_json;      
+                    if (parsedDetails && parsedDetails.marathi_analysis) {
                         // Format with spacing so it sits cleanly above the numbered list
                         aiDetailedFeedback = `🤖 Pardarshi Analysis:\n${parsedDetails.marathi_analysis}\n\nतांत्रिक त्रुटी (System Flags):\n`;
                     }
