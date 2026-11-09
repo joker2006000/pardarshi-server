@@ -53,7 +53,7 @@ cron.schedule('*/5 * * * * *', async () => {
                     const parsedDetails = JSON.parse(alertGroup.proof_details_json);
                     if (parsedDetails.marathi_analysis) {
                         // Format with spacing so it sits cleanly above the numbered list
-                        aiDetailedFeedback = `🤖 AI विश्लेषण:\n${parsedDetails.marathi_analysis}\n\nतांत्रिक त्रुटी (System Flags):\n`;
+                        aiDetailedFeedback = `🤖 Pardarshi Analysis:\n${parsedDetails.marathi_analysis}\n\nतांत्रिक त्रुटी (System Flags):\n`;
                     }
                 } catch (jsonErr) {
                     console.error("Failed to parse proof_details JSON for push notification:", jsonErr);
