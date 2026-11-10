@@ -3,8 +3,8 @@ const db = require('../config/db');
 const aiService = require('../services/ai.service');
 
 // Gemini Multimodal Live API model
-// models/gemini-2.0-flash-exp is the official supported Live model for BidiGenerateContent
-const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'models/gemini-2.0-flash-exp';
+// Gemini 3.8 Live (models/gemini-3.8-live) is the official default low-latency Live API model
+const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'models/gemini-3.8-live';
 const GEMINI_API_VERSION = process.env.GEMINI_API_VERSION || 'v1beta';
 
 /**
