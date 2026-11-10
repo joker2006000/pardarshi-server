@@ -55,7 +55,8 @@ wss.on('connection', (ws, req) => {
 
 // Intercept HTTP Upgrade requests ONLY for '/ai-stream'
 server.on('upgrade', (request, socket, head) => {
-    const pathname = request.url.split('?')[0];
+    const rawPath = request.url.split('?')[0];
+    const pathname = rawPath.endsWith('/') && rawPath.length > 1 ? rawPath.slice(0, -1) : rawPath;
 
     if (pathname === '/ai-stream') {
         wss.handleUpgrade(request, socket, head, (ws) => {
