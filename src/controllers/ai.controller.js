@@ -14,6 +14,7 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
     let geminiWs = null;
     let isGeminiReady = false;
     let pendingAudioStreamEnd = false;
+    let isAudioTurnActive = false;
     const pendingAudioQueue = [];
     let clientAudioChunksCount = 0;
     let clientAudioBytesCount = 0;
@@ -23,6 +24,7 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
     const cleanupGemini = () => {
         isGeminiReady = false;
         pendingAudioStreamEnd = false;
+        isAudioTurnActive = false;
         pendingAudioQueue.length = 0;
         clientAudioChunksCount = 0;
         clientAudioBytesCount = 0;
@@ -269,24 +271,13 @@ ${JSON.stringify(aiContextPayload)}`;
 
                             // Flush pending turn-completion signal if user finished speaking during handshake
                             if (pendingAudioStreamEnd) {
-                                console.log('🚀 Flushing buffered audio_stream_end to Gemini...');
+                                console.log('🚀 Flushing buffered audioStreamEnd to Gemini...');
                                 pendingAudioStreamEnd = false;
+                                isAudioTurnActive = false;
                                 if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
-                                    const silenceBase64 = Buffer.alloc(1600 * 2).toString('base64');
-                                    const silenceChunk = {
-                                        mimeType: "audio/pcm;rate=16000",
-                                        data: silenceBase64
-                                    };
                                     geminiWs.send(JSON.stringify({
                                         realtimeInput: {
-                                            audio: silenceChunk,
-                                            mediaChunks: [silenceChunk]
-                                        }
-                                    }));
-                                    geminiWs.send(JSON.stringify({
-                                        realtimeInput: {
-                                            audioStreamEnd: true,
-                                            audio_stream_end: true
+                                            audioStreamEnd: true
                                         }
                                     }));
                                 }
@@ -380,6 +371,7 @@ ${JSON.stringify(aiContextPayload)}`;
             else if (parsedMsg.type === 'realtime_audio') {
                 if (!parsedMsg.audioBase64) return;
                 pendingAudioStreamEnd = false; // New incoming speech cancels any previous turn completion
+                isAudioTurnActive = true;
 
                 const chunkObj = {
                     mimeType: "audio/pcm;rate=16000",
@@ -443,29 +435,22 @@ ${JSON.stringify(aiContextPayload)}`;
                 parsedMsg.type === 'finish_turn' ||
                 parsedMsg.type === 'speech_end'
             ) {
+                // Ignore duplicate turn completion calls if turn is already finalized
+                if (!isAudioTurnActive && clientAudioChunksCount === 0) {
+                    console.log('ℹ️ Duplicate or redundant audio_stream_end received, ignoring.');
+                    return;
+                }
+
                 console.log(`🛑 User finished speaking (${clientAudioChunksCount} chunks, ~${Math.round(clientAudioBytesCount / 1024)} KB). Finalizing turn with Gemini Live...`);
+                isAudioTurnActive = false;
                 clientAudioChunksCount = 0;
                 clientAudioBytesCount = 0;
 
                 if (isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
-                    // Append ~100ms of clean silence (1600 samples) so VAD acoustic model detects clean speech termination
-                    const silenceBase64 = Buffer.alloc(1600 * 2).toString('base64');
-                    const silenceChunk = {
-                        mimeType: "audio/pcm;rate=16000",
-                        data: silenceBase64
-                    };
+                    // Send strictly single audioStreamEnd field to comply with protobuf oneof
                     geminiWs.send(JSON.stringify({
                         realtimeInput: {
-                            audio: silenceChunk,
-                            mediaChunks: [silenceChunk]
-                        }
-                    }));
-
-                    // Signal audioStreamEnd (both camelCase and snake_case)
-                    geminiWs.send(JSON.stringify({
-                        realtimeInput: {
-                            audioStreamEnd: true,
-                            audio_stream_end: true
+                            audioStreamEnd: true
                         }
                     }));
                 } else {
