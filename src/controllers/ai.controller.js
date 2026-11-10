@@ -15,6 +15,8 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
     let isGeminiReady = false;
     let pendingAudioStreamEnd = false;
     const pendingAudioQueue = [];
+    let clientAudioChunksCount = 0;
+    let clientAudioBytesCount = 0;
 
     console.log('🎙️ New PARDARSHI AI Voice client connected.');
 
@@ -22,6 +24,8 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
         isGeminiReady = false;
         pendingAudioStreamEnd = false;
         pendingAudioQueue.length = 0;
+        clientAudioChunksCount = 0;
+        clientAudioBytesCount = 0;
         if (geminiWs) {
             try {
                 if (geminiWs.readyState === WebSocket.OPEN || geminiWs.readyState === WebSocket.CONNECTING) {
@@ -192,6 +196,12 @@ ${JSON.stringify(aiContextPayload)}`;
                             },
                             // Requests real-time text transcription alongside voice audio
                             outputAudioTranscription: {},
+                            realtimeInputConfig: {
+                                automaticActivityDetection: {
+                                    disabled: false
+                                },
+                                activityHandling: "START_OF_ACTIVITY_INTERRUPTS"
+                            },
                             systemInstruction: {
                                 parts: [
                                     {
@@ -243,14 +253,14 @@ ${JSON.stringify(aiContextPayload)}`;
                                 while (pendingAudioQueue.length > 0) {
                                     const chunk = pendingAudioQueue.shift();
                                     if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
+                                        const chunkObj = {
+                                            mimeType: "audio/pcm;rate=16000",
+                                            data: chunk
+                                        };
                                         geminiWs.send(JSON.stringify({
                                             realtimeInput: {
-                                                mediaChunks: [
-                                                    {
-                                                        mimeType: "audio/pcm;rate=16000",
-                                                        data: chunk
-                                                    }
-                                                ]
+                                                audio: chunkObj,
+                                                mediaChunks: [chunkObj]
                                             }
                                         }));
                                     }
@@ -262,9 +272,21 @@ ${JSON.stringify(aiContextPayload)}`;
                                 console.log('🚀 Flushing buffered audio_stream_end to Gemini...');
                                 pendingAudioStreamEnd = false;
                                 if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
+                                    const silenceBase64 = Buffer.alloc(1600 * 2).toString('base64');
+                                    const silenceChunk = {
+                                        mimeType: "audio/pcm;rate=16000",
+                                        data: silenceBase64
+                                    };
                                     geminiWs.send(JSON.stringify({
                                         realtimeInput: {
-                                            audioStreamEnd: true
+                                            audio: silenceChunk,
+                                            mediaChunks: [silenceChunk]
+                                        }
+                                    }));
+                                    geminiWs.send(JSON.stringify({
+                                        realtimeInput: {
+                                            audioStreamEnd: true,
+                                            audio_stream_end: true
                                         }
                                     }));
                                 }
@@ -287,18 +309,36 @@ ${JSON.stringify(aiContextPayload)}`;
                                 }
 
                                 // Normalize audio inline data across parts
+                                let totalAudioBytes = 0;
+                                let textContent = trans?.text || '';
                                 if (Array.isArray(sc.modelTurn?.parts)) {
                                     for (const part of sc.modelTurn.parts) {
                                         const audio = part.inlineData || part.inline_data;
                                         if (audio) {
                                             part.inlineData = audio;
                                             part.inline_data = audio;
+                                            if (audio.data) totalAudioBytes += audio.data.length;
                                         }
+                                        if (part.text) textContent += part.text;
                                     }
+                                }
+
+                                if (totalAudioBytes > 0 || textContent) {
+                                    console.log(`🔊 Gemini Live sent reply: Audio=${totalAudioBytes > 0 ? `${Math.round(totalAudioBytes * 0.75 / 1024)}KB` : 'None'}, Text="${textContent.slice(0, 50).replace(/\n/g, ' ')}..."`);
+                                }
+                                if (sc.turnComplete) {
+                                    console.log('✅ Gemini Live completed turn (turnComplete: true)');
+                                }
+                                if (sc.interrupted) {
+                                    console.log('⚠️ Gemini Live response interrupted by user (interrupted: true)');
                                 }
 
                                 clientWs.send(JSON.stringify(geminiObj));
                             } else {
+                                const topKeys = Object.keys(geminiObj).filter(k => k !== 'serverContent');
+                                if (topKeys.length > 0) {
+                                    console.log(`ℹ️ Gemini Live frame received: [${topKeys.join(', ')}]`);
+                                }
                                 clientWs.send(responseStr);
                             }
                         }
@@ -341,15 +381,23 @@ ${JSON.stringify(aiContextPayload)}`;
                 if (!parsedMsg.audioBase64) return;
                 pendingAudioStreamEnd = false; // New incoming speech cancels any previous turn completion
 
+                const chunkObj = {
+                    mimeType: "audio/pcm;rate=16000",
+                    data: parsedMsg.audioBase64
+                };
+
+                clientAudioChunksCount++;
+                clientAudioBytesCount += Math.round((parsedMsg.audioBase64.length * 3) / 4);
+
                 if (isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
+                    if (clientAudioChunksCount % 15 === 1) {
+                        console.log(`🎙️ Streaming audio to Gemini Live: chunk #${clientAudioChunksCount} (~${Math.round(clientAudioBytesCount / 1024)} KB forwarded)...`);
+                    }
+
                     geminiWs.send(JSON.stringify({
                         realtimeInput: {
-                            mediaChunks: [
-                                {
-                                    mimeType: "audio/pcm;rate=16000",
-                                    data: parsedMsg.audioBase64
-                                }
-                            ]
+                            audio: chunkObj,
+                            mediaChunks: [chunkObj]
                         }
                     }));
                 } else if (!isGeminiReady && geminiWs && geminiWs.readyState === WebSocket.CONNECTING) {
@@ -372,6 +420,7 @@ ${JSON.stringify(aiContextPayload)}`;
             ) {
                 const promptText = parsedMsg.text || parsedMsg.query || parsedMsg.message || '';
                 if (promptText && isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
+                    console.log(`💬 User sent text prompt: "${promptText.slice(0, 50)}..."`);
                     geminiWs.send(JSON.stringify({
                         clientContent: {
                             turns: [
@@ -394,10 +443,29 @@ ${JSON.stringify(aiContextPayload)}`;
                 parsedMsg.type === 'finish_turn' ||
                 parsedMsg.type === 'speech_end'
             ) {
+                console.log(`🛑 User finished speaking (${clientAudioChunksCount} chunks, ~${Math.round(clientAudioBytesCount / 1024)} KB). Finalizing turn with Gemini Live...`);
+                clientAudioChunksCount = 0;
+                clientAudioBytesCount = 0;
+
                 if (isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
+                    // Append ~100ms of clean silence (1600 samples) so VAD acoustic model detects clean speech termination
+                    const silenceBase64 = Buffer.alloc(1600 * 2).toString('base64');
+                    const silenceChunk = {
+                        mimeType: "audio/pcm;rate=16000",
+                        data: silenceBase64
+                    };
                     geminiWs.send(JSON.stringify({
                         realtimeInput: {
-                            audioStreamEnd: true
+                            audio: silenceChunk,
+                            mediaChunks: [silenceChunk]
+                        }
+                    }));
+
+                    // Signal audioStreamEnd (both camelCase and snake_case)
+                    geminiWs.send(JSON.stringify({
+                        realtimeInput: {
+                            audioStreamEnd: true,
+                            audio_stream_end: true
                         }
                     }));
                 } else {
