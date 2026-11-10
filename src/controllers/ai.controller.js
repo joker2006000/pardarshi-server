@@ -13,12 +13,14 @@ const GEMINI_API_VERSION = process.env.GEMINI_API_VERSION || 'v1beta';
 exports.handleAiWebSocketConnection = (clientWs, req) => {
     let geminiWs = null;
     let isGeminiReady = false;
+    let pendingAudioStreamEnd = false;
     const pendingAudioQueue = [];
 
     console.log('🎙️ New PARDARSHI AI Voice client connected.');
 
     const cleanupGemini = () => {
         isGeminiReady = false;
+        pendingAudioStreamEnd = false;
         pendingAudioQueue.length = 0;
         if (geminiWs) {
             try {
@@ -254,13 +256,51 @@ ${JSON.stringify(aiContextPayload)}`;
                                     }
                                 }
                             }
+
+                            // Flush pending turn-completion signal if user finished speaking during handshake
+                            if (pendingAudioStreamEnd) {
+                                console.log('🚀 Flushing buffered audio_stream_end to Gemini...');
+                                pendingAudioStreamEnd = false;
+                                if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
+                                    geminiWs.send(JSON.stringify({
+                                        realtimeInput: {
+                                            audioStreamEnd: true
+                                        }
+                                    }));
+                                }
+                            }
                             return;
                         }
 
                         // 3. Forward Gemini's serverContent (Audio & Text Transcription) directly to frontend
                         // Zero delay, zero collisions: streamed straight to clientWs
                         if (clientWs.readyState === WebSocket.OPEN) {
-                            clientWs.send(responseStr);
+                            if (geminiObj.serverContent) {
+                                const sc = geminiObj.serverContent;
+
+                                // Normalize real-time transcription so frontend is guaranteed to find it
+                                const trans = sc.outputTranscription || sc.outputAudioTranscription || sc.output_audio_transcription || sc.output_transcription;
+                                if (trans) {
+                                    const transObj = (typeof trans === 'string') ? { text: trans } : trans;
+                                    sc.outputTranscription = transObj;
+                                    sc.outputAudioTranscription = transObj;
+                                }
+
+                                // Normalize audio inline data across parts
+                                if (Array.isArray(sc.modelTurn?.parts)) {
+                                    for (const part of sc.modelTurn.parts) {
+                                        const audio = part.inlineData || part.inline_data;
+                                        if (audio) {
+                                            part.inlineData = audio;
+                                            part.inline_data = audio;
+                                        }
+                                    }
+                                }
+
+                                clientWs.send(JSON.stringify(geminiObj));
+                            } else {
+                                clientWs.send(responseStr);
+                            }
                         }
                     } catch (parseErr) {
                         console.error('Error parsing message from Gemini:', parseErr.message);
@@ -271,6 +311,7 @@ ${JSON.stringify(aiContextPayload)}`;
                     const reasonStr = reason ? reason.toString() : 'Normal closure';
                     console.log(`🔌 Gemini Live WS closed: code=${code}, reason=${reasonStr}`);
                     isGeminiReady = false;
+                    pendingAudioStreamEnd = false;
                     if (clientWs.readyState === WebSocket.OPEN) {
                         clientWs.send(JSON.stringify({ 
                             type: 'ai_disconnected',
@@ -283,6 +324,7 @@ ${JSON.stringify(aiContextPayload)}`;
                 geminiWs.on('error', (err) => {
                     console.error('❌ Gemini Live WS connection error:', err.message);
                     isGeminiReady = false;
+                    pendingAudioStreamEnd = false;
                     if (clientWs.readyState === WebSocket.OPEN) {
                         clientWs.send(JSON.stringify({ 
                             type: 'error', 
@@ -297,6 +339,7 @@ ${JSON.stringify(aiContextPayload)}`;
             // ====================================================================
             else if (parsedMsg.type === 'realtime_audio') {
                 if (!parsedMsg.audioBase64) return;
+                pendingAudioStreamEnd = false; // New incoming speech cancels any previous turn completion
 
                 if (isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
                     geminiWs.send(JSON.stringify({
@@ -321,14 +364,20 @@ ${JSON.stringify(aiContextPayload)}`;
             // ====================================================================
             // 3. RELAY DIRECT TEXT PROMPTS TO GEMINI
             // ====================================================================
-            else if (parsedMsg.type === 'client_text') {
-                if (isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
+            else if (
+                parsedMsg.type === 'client_text' ||
+                parsedMsg.type === 'text_query' ||
+                parsedMsg.type === 'user_text' ||
+                parsedMsg.type === 'text'
+            ) {
+                const promptText = parsedMsg.text || parsedMsg.query || parsedMsg.message || '';
+                if (promptText && isGeminiReady && geminiWs?.readyState === WebSocket.OPEN) {
                     geminiWs.send(JSON.stringify({
                         clientContent: {
                             turns: [
                                 {
                                     role: "user",
-                                    parts: [{ text: parsedMsg.text || '' }]
+                                    parts: [{ text: promptText }]
                                 }
                             ],
                             turnComplete: true
@@ -351,6 +400,9 @@ ${JSON.stringify(aiContextPayload)}`;
                             audioStreamEnd: true
                         }
                     }));
+                } else {
+                    // If Gemini connection is still establishing, queue turn completion
+                    pendingAudioStreamEnd = true;
                 }
             }
 
