@@ -114,7 +114,13 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
 
                 // Generate the structured DB context payload using the resolved IDs
                 const aiContextPayload = await aiService.generateAiContextPayload(orgId, projId);
-                console.log(`📦 AI Context loaded: ${aiContextPayload.session_metadata.organization_name} (${aiContextPayload.session_metadata.active_view_scope})`);
+                const orgName = aiContextPayload.session_metadata.organization_info.name;
+                const scopeName = aiContextPayload.session_metadata.active_view_scope.scope_name;
+                const fullDateMarathi = aiContextPayload.session_metadata.temporal_context.current_full_date_marathi;
+                const dateIso = aiContextPayload.session_metadata.temporal_context.current_date_ist;
+                const timeIst = aiContextPayload.session_metadata.temporal_context.current_time_ist;
+
+                console.log(`📦 AI Context loaded: ${orgName} (${scopeName})`);
 
                 const apiKey = process.env.GEMINI_API_KEY;
                 if (!apiKey) {
@@ -136,24 +142,37 @@ exports.handleAiWebSocketConnection = (clientWs, req) => {
                 geminiWs.on('open', () => {
                     console.log('✅ Gemini Live WebSocket connection opened. Sending BidiGenerateContent setup...');
 
-                    const systemInstructionText = `You are the official PARDARSHI AI Voice Assistant (पारदर्शी AI आवाज सहाय्यक).
+                    const systemInstructionText = `तुम्ही 'पारदर्शी' (PARDARSHI) चे अधिकृत, बोलके, मैत्रीपूर्ण आणि हुशार AI आवाज व डेटा सहाय्यक आहात (PARDARSHI Friendly Live AI Assistant).
 
-MANDATORY LANGUAGE RULE (कडक नियम):
-- You MUST generate ALL your responses EXCLUSIVELY in MARATHI (मराठी).
-- Every single spoken audio response AND every text transcription MUST BE in natural, respectful, conversational Marathi.
-- Even if the user asks in English or Hindi, translate and respond 100% in Marathi.
-- Citizens, contributors, and rural villagers (from Marathwada, Vidarbha, Western Maharashtra) will speak with you. Always use polite, clear, and easy-to-understand Marathi (उदा. "नमस्कार! पारदर्शी प्रणालीमध्ये आपले स्वागत आहे...").
+खाली दिलेल्या डेटाबेस संदर्भामध्ये (Database Context JSON) चालू तारीख व वेळ (IST: ${fullDateMarathi}, वेळ: ${timeIst}), संस्थेचे सर्व तपशील, सर्व प्रकल्प, जमा झालेल्या देणग्या, झालेले सर्व खर्च (तारखा व कॅटेगरीसह), पावत्यांची AI पडताळणी, आणि संशयित व्यवहारांची (Anomalies) सविस्तर माहिती दिली आहे.
 
-PRESENTATION & FORMATTING RULE:
-- Whenever the user asks for financial breakdowns, expense lists, donor contributions, balance inquiries, or anomaly details, format your text response using clean Markdown:
-  * Markdown Tables (तक्ते) for listing multiple expenses or donations
-  * Bold text for amounts and key status labels (उदा. **₹५,०००**, **मंजूर**, **संशयित**)
-  * Bullet points for explanations
-- In your spoken audio, provide a clear, warm, concise conversational Marathi summary of the key numbers and insights so the user can hear the summary while seeing details on screen.
+महत्त्वाचे नियम व व्यक्तिमत्त्व (CORE PERSONALITY & BEHAVIOR):
 
-FINANCIAL DATA CONTEXT:
-Use ONLY the live database context JSON provided below for all financial totals, balances, expenses, donor contributions, and anomaly checks. Do NOT invent or hallucinate any financial data:
+१. भाषा व बोलका मैत्रीपूर्ण स्वभाव (Language & Conversational Freedom):
+- तुमचे सर्व संभाषण (आवाज आणि स्क्रीनवरील टेक्स्ट) संपूर्णपणे आणि केवळ शुद्ध, आदरातिथ्यपूर्ण **मराठी (मराठी)** मध्येच असावे.
+- **कधीही रोबोटसारखे किंवा एकाच साचेबद्ध वाक्यात उत्तर देऊ नका!** तुम्ही एक हुशार, जिवंत माणसाप्रमाणे बोलणारे मदतगार मित्र आहात.
+- जर वापरकर्त्याने "नमस्कार", "शुभ सकाळ", "कसे आहात?", "काय चाललंय?" असे अभिवादन केले, तर त्यांना खूप प्रेमाने आणि आपलेपणाने मराठीत उत्तर द्या (उदा. "नमस्कार! मी खूप छान आहे, तुम्ही कसे आहात? पारदर्शीमध्ये आपले मनापासून स्वागत! आज मी तुम्हाला काय मदत करू?"). अशा वेळी न विचारता लगेच खर्चाचा तक्ता फेकू नका! आधी त्यांना काय हवे आहे ते विचारा.
+- जर वापरकर्त्याने विनोद किंवा गंमत विचारली ("काहीतरी जोक सांगा", "हसवा"), तर त्यांना एक छान, स्वच्छ, कौटुंबिक मराठी विनोद किंवा हसवणारी गोष्ट सांगा.
+- जर वापरकर्त्याने चालू वेळ किंवा तारीख विचारली, तर अचूक तारीख आणि वेळ सांगा (उदा. "आज ${fullDateMarathi} आहे आणि वेळ साधारण ${timeIst} झाली आहे.").
+- जर वापरकर्त्याने 'पारदर्शी' बद्दल विचारले ("पारदर्शी काय आहे?", "हे कसे काम करते?"), तर त्यांना सांगा: "पारदर्शी ही संस्था आणि सामाजिक प्रकल्पांमधील प्रत्येक रुपयाचा हिशोब जनतेसमोर १००% उघड ठेवणारी डिजिटल प्रणाली आहे. इथे प्रत्येक खर्चाची पावती AI द्वारे स्कॅन केली जाते, दुकानदाराचे अस्तित्व नकाशावर तपासले जाते, आणि डिलिव्हरीचे फोटो तपासूनच खर्च मंजूर केला जातो, ज्यामुळे गैरव्यवहाराला जागा राहत नाही."
+- जर वापरकर्ता गोंधळलेला असेल ("मला समजत नाही", "काय विचारू?"), तर त्याला प्रेमाने मदत करा आणि उदाहरणे द्या (उदा. "काही काळजी करू नका! तुम्ही मला एकूण शिल्लक निधी, आज किंवा या महिन्यात झालेले खर्च, सर्वात मोठे देणगीदार, किंवा संशयित पावत्या यांबद्दल विचारू शकता. सांगा, यातील काय जाणून घ्यायला आवडेल?").
 
+२. डेटाचे विश्लेषण व अचूक उत्तरे (Data Analysis & Dynamic Targeting):
+- वापरकर्त्याचा प्रश्न नीट समजून घ्या आणि डेटाबेसमधून फक्त त्यासंबंधी अचूक डेटा शोधा.
+- **तारीख विश्लेषण (Date Analysis)**:
+  * वापरकर्त्याने "आजचे खर्च" विचारल्यास: 'expense_date' == '${dateIso}' असलेले खर्च शोधा. जर आज कोणताही खर्च झालेला नसेल, तर सांगा: "आजच्या तारखेत कोणताही खर्च झालेला नाही, पण नुकताच झालेला खर्च खालीलप्रमाणे आहे..."
+  * वापरकर्त्याने "या महिन्याचे" विचारल्यास चालू महिन्यातील खर्च एकत्र करून सांगा.
+- **कॅटेगरी व प्रकार विश्लेषण (Category & Type Analysis)**:
+  * वापरकर्त्याने विशिष्ट बाब विचारल्यास (उदा. 'साहित्याचा खर्च किती झाला?', 'बांधकामावर किती खर्च झाला?'), फक्त त्या कॅटेगरीचा खर्च शोधा आणि अचूक सांगा.
+- **देणगीदार व जमा रक्कम**:
+  * देणग्यांबद्दल विचारल्यास देणगीदारांची नावे, तारखा आणि रकमा स्पष्ट सांगा.
+- **आकडेवारीची १००% सत्यता**: सर्व आकडे केवळ दिलेल्या JSON डेटाबेसमधूनच घ्या. कोणताही आकडा स्वतःच्या मनाने तयार करू नका.
+
+३. टेक्स्ट फॉरमॅटिंग व आवाज सादरीकरण (Markdown Tables & Voice Summary):
+- **स्क्रीनवरील टेक्स्ट (Markdown Output)**: जेव्हा वापरकर्ता खर्चाची यादी, देणग्यांचा हिशोब किंवा संशयित पावत्यांची माहिती मागेल, तेव्हा स्क्रीनवर सुंदर **Markdown Tables** (| तारीख | तपशील | रक्कम | स्थिती |), ठळक अक्षरे (उदा. **₹५,०००**), आणि बुलेट पॉईंट्स वापरा.
+- **बोलका आवाज (Spoken Audio)**: बोलताना मात्र तक्त्यातील सर्व आकडे एका सुरात वाचून वापरकर्त्याला कंटाळवाणे करू नका; त्याऐवजी मुख्य निष्कर्ष, एकूण रक्कम आणि महत्त्वाचे मुद्दे नैसर्गिक, गोड मराठी आवाजात संभाषणाच्या रूपात सांगा.
+
+डेटाबेस संदर्भ JSON (Live Database Context):
 ${JSON.stringify(aiContextPayload)}`;
 
                     const setupMessage = {
@@ -210,8 +229,8 @@ ${JSON.stringify(aiContextPayload)}`;
                                 clientWs.send(JSON.stringify({ 
                                     type: 'handshake_success',
                                     context: {
-                                        organization: aiContextPayload.session_metadata.organization_name,
-                                        scope: aiContextPayload.session_metadata.active_view_scope
+                                        organization: orgName,
+                                        scope: scopeName
                                     }
                                 }));
                             }
@@ -239,6 +258,7 @@ ${JSON.stringify(aiContextPayload)}`;
                         }
 
                         // 3. Forward Gemini's serverContent (Audio & Text Transcription) directly to frontend
+                        // Zero delay, zero collisions: streamed straight to clientWs
                         if (clientWs.readyState === WebSocket.OPEN) {
                             clientWs.send(responseStr);
                         }
@@ -290,8 +310,8 @@ ${JSON.stringify(aiContextPayload)}`;
                         }
                     }));
                 } else if (!isGeminiReady && geminiWs && geminiWs.readyState === WebSocket.CONNECTING) {
-                    // Buffer chunks while connection is establishing (keep last 50 chunks ~1.5s)
-                    if (pendingAudioQueue.length > 50) {
+                    // Buffer chunks while connection is establishing (keep last 60 chunks ~1.5s)
+                    if (pendingAudioQueue.length > 60) {
                         pendingAudioQueue.shift();
                     }
                     pendingAudioQueue.push(parsedMsg.audioBase64);

@@ -126,7 +126,7 @@ exports.analyzeReceipt = async (imageBuffer, mimeType, expectedTitle, expectedDe
 };
 
 // ============================================================================
-// 2. NEW LIVE VOICE ASSISTANT CONTEXT PAYLOAD GENERATOR
+// 2. LIVE VOICE & DATA ASSISTANT CONTEXT PAYLOAD GENERATOR
 // ============================================================================
 exports.generateAiContextPayload = async (organization_id, project_id = null) => {
     const connection = await db.getConnection();
@@ -148,33 +148,33 @@ exports.generateAiContextPayload = async (organization_id, project_id = null) =>
             [announcements],
             [reports]
         ] = await Promise.all([
-            // 1. Organization Details & Totals
+            // 1. Organization Details & Financial Totals
             connection.query(
-                `SELECT name, slug, description, category, type, city, district, state, established_year,
+                `SELECT organization_id, name, slug, description, category, type, city, district, state, established_year,
                         total_received, total_expenses, remaining_balance 
                  FROM organizations WHERE organization_id = ?`, 
                 [organization_id]
             ),
-            // 2. All Projects in this Organization (So AI understands overall org fund distribution)
+            // 2. All Projects in this Organization (Full portfolio context)
             connection.query(
-                `SELECT project_id, name, slug, total_received, total_expenses, remaining_balance, created_at
+                `SELECT project_id, name, slug, description, total_received, total_expenses, remaining_balance, created_at
                  FROM organization_projects WHERE organization_id = ? ORDER BY created_at DESC`,
                 [organization_id]
             ),
-            // 3. Current Specific Project Details (if user is inside a specific project)
+            // 3. Current Specific Project Details (if viewing a single project)
             project_id ? connection.query(
-                `SELECT project_id, name, slug, description, total_received, total_expenses, remaining_balance 
+                `SELECT project_id, name, slug, description, total_received, total_expenses, remaining_balance, created_at 
                  FROM organization_projects WHERE project_id = ? AND organization_id = ?`, 
                 [project_id, organization_id]
             ) : Promise.resolve([[null]]),
-            // 4. Contributions (Excludes sensitive payment_id, access_token, mobile, email)
+            // 4. Contributions / Public Donations
             connection.query(
                 `SELECT contribution_id, project_id, contributor_name, amount, currency, 
                         payment_method, payment_status, notes, created_at 
                  FROM contributions WHERE organization_id = ? ${projectFilter} ORDER BY created_at DESC`, 
                 queryParams
             ),
-            // 5. Expenses + Uploaded Proof Document Metadata (Excludes payment_id)
+            // 5. Itemized Expenses + Uploaded Bill Metadata
             connection.query(
                 `SELECT e.expense_id, e.project_id, e.title, e.description, e.amount, e.expense_date, 
                         e.category, e.is_online_payment, e.payment_mode, e.payment_method, 
@@ -184,10 +184,10 @@ exports.generateAiContextPayload = async (organization_id, project_id = null) =>
                          FROM expense_documents d WHERE d.expense_id = e.expense_id) AS uploaded_proofs
                  FROM expenses e
                  LEFT JOIN users u ON e.created_by = u.user_id
-                 WHERE e.organization_id = ? ${expProjectFilter} ORDER BY e.expense_date DESC`, 
+                 WHERE e.organization_id = ? ${expProjectFilter} ORDER BY e.expense_date DESC, e.created_at DESC`, 
                 queryParams
             ),
-            // 6. Verified Proofs Data (Full AI Receipt Analysis JSON)
+            // 6. Verified Proofs Data (Full AI Receipt OCR Analysis JSON)
             connection.query(
                 `SELECT verified_proof_id, project_id, expense_id, document_id, information, created_at 
                  FROM verified_proofs_data WHERE organization_id = ? ${projectFilter}`, 
@@ -199,7 +199,7 @@ exports.generateAiContextPayload = async (organization_id, project_id = null) =>
                  FROM verified_delivery_data WHERE organization_id = ? ${projectFilter}`, 
                 queryParams
             ),
-            // 8. Anomaly Detections (Full Flags & Marathi Analysis JSON)
+            // 8. Anomaly Detections (Flags & Marathi Audit Explanations)
             connection.query(
                 `SELECT anomaly_id, project_id, expense_id, proof_url, anomaly_text, 
                         proof_details, verification_status, alert_message_status, created_at 
@@ -212,7 +212,7 @@ exports.generateAiContextPayload = async (organization_id, project_id = null) =>
                  FROM announcements a WHERE a.organization_id = ? AND a.status = 'show' ${annProjectFilter} ORDER BY a.created_at DESC`,
                 queryParams
             ),
-            // 10. Active Disputes / Reports (Excludes guest_email, access_token)
+            // 10. Active Citizen Disputes / Reports
             connection.query(
                 `SELECT report_id, project_id, expense_id AS related_expense_id, contribution_id AS related_contribution_id, 
                         subject, status, priority, resolved_at, created_at 
@@ -224,56 +224,193 @@ exports.generateAiContextPayload = async (organization_id, project_id = null) =>
         const org = orgData[0] || {};
         const targetProj = targetProjData[0] || null;
 
+        // Current Indian Standard Time (IST) Context
+        const now = new Date();
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        const istDate = new Date(now.getTime() + istOffsetMs);
+        const daysMarathi = ["रविवार", "सोमवार", "मंगळवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार"];
+        const monthsMarathi = ["जानेवारी", "फेब्रुवारी", "मार्च", "एप्रिल", "मे", "जून", "जुलै", "ऑगस्ट", "सप्टेंबर", "ऑक्टोबर", "नोव्हेंबर", "डिसेंबर"];
+        const dayMarathi = daysMarathi[istDate.getUTCDay()];
+        const monthMarathi = monthsMarathi[istDate.getUTCMonth()];
+        const dayNumber = istDate.getUTCDate();
+        const yearNumber = istDate.getUTCFullYear();
+        const istDateFormatted = `${dayNumber} ${monthMarathi} ${yearNumber}`;
+        const istDateIso = istDate.toISOString().slice(0, 10);
+        const istTimeStr = istDate.toISOString().slice(11, 16);
+
+        // Precompute Aggregations & Categorizations for Instant AI Lookup
+        const expensesByCategory = {};
+        const expensesByMonth = {};
+        let totalExpensesAmount = 0;
+
+        const mappedExpenses = expenses.map(e => {
+            const amt = parseFloat(e.amount || 0);
+            totalExpensesAmount += amt;
+
+            const categoryName = e.category || 'इतर (Other)';
+            expensesByCategory[categoryName] = (expensesByCategory[categoryName] || 0) + amt;
+
+            let expDateStr = null;
+            if (e.expense_date) {
+                try {
+                    expDateStr = new Date(e.expense_date).toISOString().slice(0, 10);
+                    const monthKey = expDateStr.slice(0, 7);
+                    expensesByMonth[monthKey] = (expensesByMonth[monthKey] || 0) + amt;
+                } catch (_) {}
+            }
+
+            return {
+                expense_id: e.expense_id,
+                project_id: e.project_id,
+                title: e.title,
+                description: e.description || '',
+                amount: amt,
+                formatted_amount: `₹${amt.toLocaleString('en-IN')}`,
+                expense_date: expDateStr || e.expense_date,
+                created_at: e.created_at ? new Date(e.created_at).toISOString() : null,
+                paid_at: e.paid_at ? new Date(e.paid_at).toISOString() : null,
+                category: categoryName,
+                payment_mode: e.payment_mode || (e.is_online_payment ? 'Online' : 'Cash'),
+                payment_status: e.payment_status || 'success',
+                overall_status: e.overall_status || 'approved',
+                created_by_member: e.created_by_member || 'Unknown',
+                uploaded_proofs: safeJsonParse(e.uploaded_proofs)
+            };
+        });
+
+        const contributionsByMethod = {};
+        let totalContributionsAmount = 0;
+
+        const mappedContributions = contributions.map(c => {
+            const amt = parseFloat(c.amount || 0);
+            totalContributionsAmount += amt;
+
+            const method = c.payment_method || 'Online';
+            contributionsByMethod[method] = (contributionsByMethod[method] || 0) + amt;
+
+            let createdDateStr = null;
+            if (c.created_at) {
+                try {
+                    createdDateStr = new Date(c.created_at).toISOString().slice(0, 10);
+                } catch (_) {}
+            }
+
+            return {
+                contribution_id: c.contribution_id,
+                project_id: c.project_id,
+                contributor_name: c.contributor_name || 'अनामिक देणगीदार (Anonymous)',
+                amount: amt,
+                formatted_amount: `₹${amt.toLocaleString('en-IN')}`,
+                currency: c.currency || 'INR',
+                payment_method: method,
+                payment_status: c.payment_status || 'success',
+                notes: c.notes || '',
+                donation_date: createdDateStr,
+                created_at: c.created_at ? new Date(c.created_at).toISOString() : null
+            };
+        });
+
         return {
             session_metadata: {
-                platform: "PARDARSHI Financial Transparency System",
-                organization_name: org.name || "Unknown Organization",
-                organization_location: `${org.city || ''}, ${org.district || ''}, ${org.state || ''}`.replace(/^, |, $/g, ''),
-                active_view_scope: targetProj ? `Project Level: ${targetProj.name}` : "Organization-Wide Overview",
+                platform_info: {
+                    name: "PARDARSHI (पारदर्शी)",
+                    description: "सार्वजनिक आर्थिक पारदर्शकता, सामाजिक निधी आणि खर्चाचा १००% हिशोब नागरिकांपर्यंत पोहोचवणारी डिजिटल प्रणाली.",
+                    core_purpose: "भ्रष्टाचार रोखणे आणि जनतेच्या पैशांचा प्रत्येक रुपया कोठे खर्च झाला याचा पुरावा (पावत्या, दुकानदाराची तपासणी, डिलिव्हरीचे फोटो) उघड करणे."
+                },
+                temporal_context: {
+                    current_date_ist: istDateIso,
+                    current_time_ist: istTimeStr,
+                    current_day_marathi: dayMarathi,
+                    current_full_date_marathi: `${dayMarathi}, ${istDateFormatted}`,
+                    note: "वापरकर्त्याने 'आजचे', 'कालचे', 'या आठवड्याचे' किंवा 'या महिन्याचे' खर्च/व्यवहार विचारल्यास या चालू तारखेशी तुलना करून अचूक माहिती द्या."
+                },
+                organization_info: {
+                    organization_id: org.organization_id || organization_id,
+                    name: org.name || "Unknown Organization",
+                    slug: org.slug || "",
+                    description: org.description || "",
+                    category: org.category || "",
+                    type: org.type || "",
+                    location: `${org.city || ''}, ${org.district || ''}, ${org.state || ''}`.replace(/^, |, $/g, ''),
+                    established_year: org.established_year || null
+                },
+                active_view_scope: {
+                    scope_type: targetProj ? "PROJECT_SPECIFIC" : "ORGANIZATION_WIDE",
+                    scope_name: targetProj ? `प्रकल्प: ${targetProj.name}` : "संपूर्ण संस्था (सर्व प्रकल्प एकत्र)",
+                    project_id: targetProj ? targetProj.project_id : null,
+                    project_name: targetProj ? targetProj.name : null
+                },
                 ai_behavior_rules: [
-                    "You are the official PARDARSHI AI Voice Assistant (पारदर्शी AI आवाज सहाय्यक).",
-                    "MANDATORY LANGUAGE: ALL your spoken voice responses and text outputs MUST BE EXCLUSIVELY IN MARATHI (मराठी). Whether the user speaks or types in English, Hindi, Marathi, or mixed languages, you MUST ALWAYS respond 100% in natural, polite, respectful, and conversational Marathi.",
-                    "When speaking in Marathi, use warm, respectful, and easily understandable language suited for rural and urban citizens (including Marathwada, Vidarbha, and Western Maharashtra dialects).",
-                    "If the user asks for a table, breakdown, or structured list, output clean Markdown tables, bullet points, and bold text in your text transcript while summarizing the key numbers and insights naturally in your spoken Marathi voice.",
-                    "Use ONLY this JSON payload for all mathematical calculations, balances, contributions, expenses, and anomaly checks. Never invent or hallucinate financial numbers.",
-                    "Explain the difference between 'payment_status' (gateway transfer status: pending/success/failed) and 'overall_status' (audit status: pending/approved/paid/rejected) clearly in Marathi when asked.",
-                    "When asked about suspicious expenses, errors, or flags, cross-reference 'anomaly_detections' and read the 'marathi_analysis' inside 'proof_details' to explain the exact issue thoroughly in Marathi."
+                    "You are the official PARDARSHI AI Voice Assistant (पारदर्शी AI आवाज व डेटा सहाय्यक).",
+                    "LANGUAGE: ALL your spoken voice responses and text outputs MUST BE EXCLUSIVELY IN MARATHI (मराठी). Whether the user speaks in English, Hindi, or Marathi, you must reply 100% in natural, respectful, conversational Marathi.",
+                    "FRIENDLY CONVERSATION (NOT ROBOTIC): Do NOT give rigid, repetitive, or canned responses! Be warm, polite, and conversational. When someone says 'नमस्कार' or 'कसे आहात?', greet them back warmly and ask how you can help. If they ask for a joke, tell a light clean Marathi joke. If they ask the time or date, answer using the temporal_context.",
+                    "TARGETED ANSWERS: Answer ONLY what the user asks. If the user asks about today's expenses, look up expenses where expense_date == current_date_ist. If they ask about a category (उदा. 'साहित्याचा खर्च किती?'), answer specifically for that category.",
+                    "ASSISTING CONFUSED USERS: If the user says 'मला समजत नाही' or is unsure what to ask, gently suggest options (उदा. 'तुम्ही मला एकूण शिल्लक निधी, नुकतेच झालेले खर्च, किंवा संशयित पावत्या यांबद्दल विचारू शकता. सांगा, काय माहिती हवी आहे?').",
+                    "TEXT MARKDOWN & SPOKEN SUMMARY: When presenting lists, itemized expenses, or donor contributions, output clean Markdown tables, bold numbers (उदा. **₹५,०००**), and bullet points in text so the user can easily read on screen. In your spoken voice, provide a clear, concise conversational Marathi summary of the key numbers and insights.",
+                    "ACCURACY: Use ONLY this JSON payload for numbers, balances, expenses, and donations. Never fabricate or hallucinate financial figures."
                 ]
             },
             financial_summaries: {
+                description: "संस्थेचा आणि चालू प्रकल्पाचा एकंदर जमा, खर्च आणि शिल्लक निधीचा अधिकृत हिशोब.",
                 organization_totals: {
                     total_received: parseFloat(org.total_received || 0),
                     total_expenses: parseFloat(org.total_expenses || 0),
-                    remaining_balance: parseFloat(org.remaining_balance || 0)
+                    remaining_balance: parseFloat(org.remaining_balance || 0),
+                    formatted: {
+                        total_received: `₹${parseFloat(org.total_received || 0).toLocaleString('en-IN')}`,
+                        total_expenses: `₹${parseFloat(org.total_expenses || 0).toLocaleString('en-IN')}`,
+                        remaining_balance: `₹${parseFloat(org.remaining_balance || 0).toLocaleString('en-IN')}`
+                    }
                 },
                 current_project_totals: targetProj ? {
                     project_id: targetProj.project_id,
                     project_name: targetProj.name,
                     total_received: parseFloat(targetProj.total_received || 0),
                     total_expenses: parseFloat(targetProj.total_expenses || 0),
-                    remaining_balance: parseFloat(targetProj.remaining_balance || 0)
+                    remaining_balance: parseFloat(targetProj.remaining_balance || 0),
+                    formatted: {
+                        total_received: `₹${parseFloat(targetProj.total_received || 0).toLocaleString('en-IN')}`,
+                        total_expenses: `₹${parseFloat(targetProj.total_expenses || 0).toLocaleString('en-IN')}`,
+                        remaining_balance: `₹${parseFloat(targetProj.remaining_balance || 0).toLocaleString('en-IN')}`
+                    }
                 } : null,
                 all_organization_projects: allOrgProjects.map(p => ({
                     project_id: p.project_id,
                     name: p.name,
                     slug: p.slug,
+                    description: p.description || '',
                     total_received: parseFloat(p.total_received || 0),
                     total_expenses: parseFloat(p.total_expenses || 0),
                     remaining_balance: parseFloat(p.remaining_balance || 0)
-                }))
+                })),
+                computed_aggregations: {
+                    total_expenses_count: mappedExpenses.length,
+                    total_contributions_count: mappedContributions.length,
+                    expenses_by_category: expensesByCategory,
+                    expenses_by_month: expensesByMonth,
+                    contributions_by_method: contributionsByMethod
+                }
             },
             transactions: {
-                contributions: contributions.map(c => ({
-                    ...c,
-                    amount: parseFloat(c.amount || 0)
-                })),
-                expenses: expenses.map(e => ({
-                    ...e,
-                    amount: parseFloat(e.amount || 0),
-                    uploaded_proofs: safeJsonParse(e.uploaded_proofs)
-                }))
+                expenses_metadata: {
+                    description: "खर्चांची यादी. 'expense_date' म्हणजे प्रत्यक्ष खरेदीची तारीख, 'created_at' म्हणजे सिस्टीममधील नोंद तारीख.",
+                    field_guide: {
+                        expense_date: "खरेदीची प्रत्यक्ष तारीख (YYYY-MM-DD)",
+                        amount: "खर्च झालेली रक्कम (₹)",
+                        category: "खर्चाचा प्रकार / कॅटेगरी",
+                        payment_status: "पेमेंट गेटवे / बँक ट्रान्सफर स्थिती (उदा. success, pending, failed)",
+                        overall_status: "अंतर्गत ऑडिट मंजुरी स्थिती (approved, pending, paid, rejected)",
+                        payment_mode: "खर्चाचे माध्यम (Online, Cash, Bank Transfer)"
+                    }
+                },
+                expenses: mappedExpenses,
+                contributions_metadata: {
+                    description: "देणगीदारांकडून जमा झालेली रक्कम व देणग्यांची यादी."
+                },
+                contributions: mappedContributions
             },
             anomaly_and_verification_data: {
+                description: "AI पावती तपासणी (OCR), डिलिव्हरी फोटो पडताळणी, आणि संशयित व्यवहारांची (Anomalies) यादी.",
                 verified_proofs_data: verifiedProofs.map(vp => ({
                     ...vp,
                     information: safeJsonParse(vp.information)
